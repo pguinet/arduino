@@ -1,6 +1,9 @@
 # Credentials WiFi (ne jamais versionner)
 **/credentials.h
 
+# Token API PRIM (ne jamais versionner)
+**/prim_config.h
+
 # Arduino CLI (binaire)
 bin/
 

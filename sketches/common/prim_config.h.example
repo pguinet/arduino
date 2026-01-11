@@ -1,0 +1,5 @@
+// Configuration API PRIM Île-de-France Mobilités
+// Obtenir un token sur https://prim.iledefrance-mobilites.fr/
+// Copier ce fichier vers prim_config.h et remplacer le token
+
+#define PRIM_API_KEY "VOTRE_TOKEN_PRIM_ICI"
