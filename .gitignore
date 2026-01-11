@@ -1,0 +1,11 @@
+# Credentials WiFi (ne jamais versionner)
+**/credentials.h
+
+# Arduino CLI (binaire)
+bin/
+
+# Build Arduino
+build/
+*.elf
+*.bin
+*.hex
