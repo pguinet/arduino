@@ -1,3 +1,14 @@
+/*
+ * AccelDemo - Circuit Playground Express
+ *
+ * Demonstration de l'accelerometre avec affichage sur LEDs.
+ *
+ * Board: Adafruit Circuit Playground Express
+ * FQBN: adafruit:samd:adafruit_circuitplayground_m0
+ *
+ * @dependencies Adafruit_CircuitPlayground
+ */
+
 #include <Adafruit_CircuitPlayground.h>
 
 void setup() {

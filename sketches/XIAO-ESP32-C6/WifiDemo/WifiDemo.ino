@@ -1,3 +1,14 @@
+/*
+ * WifiDemo - XIAO ESP32-C6
+ *
+ * Connexion WiFi basique.
+ *
+ * Board: Seeed XIAO ESP32-C6
+ * FQBN: esp32:esp32:XIAO_ESP32C6
+ *
+ * @dependencies (aucune)
+ */
+
 #include <WiFi.h>
 #include "credentials.h"
 

@@ -10,6 +10,8 @@
  *
  * Board: NodeMCU 1.0 (ESP-12E Module)
  * FQBN: esp8266:esp8266:nodemcuv2
+ *
+ * @dependencies U8g2
  */
 
 #include <U8g2lib.h>

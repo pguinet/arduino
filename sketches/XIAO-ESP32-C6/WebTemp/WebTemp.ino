@@ -1,3 +1,14 @@
+/*
+ * WebTemp - XIAO ESP32-C6
+ *
+ * Serveur web affichant la temperature interne.
+ *
+ * Board: Seeed XIAO ESP32-C6
+ * FQBN: esp32:esp32:XIAO_ESP32C6
+ *
+ * @dependencies (aucune)
+ */
+
 #include <WiFi.h>
 #include <WebServer.h>
 #include "credentials.h"

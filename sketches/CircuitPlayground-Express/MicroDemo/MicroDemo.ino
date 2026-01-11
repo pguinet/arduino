@@ -1,3 +1,14 @@
+/*
+ * MicroDemo - Circuit Playground Express
+ *
+ * VU-metre avec le microphone integre.
+ *
+ * Board: Adafruit Circuit Playground Express
+ * FQBN: adafruit:samd:adafruit_circuitplayground_m0
+ *
+ * @dependencies Adafruit_CircuitPlayground
+ */
+
 #include <Adafruit_CircuitPlayground.h>
 
 void setup() {

@@ -1,0 +1,11 @@
+# Bibliothèques Arduino requises pour ce projet
+# Installer avec : ./bin/arduino-cli lib install "NomLib"
+
+# Affichage OLED
+U8g2
+
+# Parsing JSON (API REST)
+ArduinoJson
+
+# Circuit Playground Express
+Adafruit_CircuitPlayground

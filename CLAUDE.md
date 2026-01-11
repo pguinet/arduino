@@ -8,6 +8,35 @@ Dans ce projet, on va principalement créer des petits programmes de démonstrat
 
 Ah et pour etre plus amical, tu peux me tutoyer.
 
+## Conventions de code
+
+### En-tête de sketch
+
+Chaque sketch doit avoir un en-tête standardisé :
+
+```c
+/*
+ * NomDuSketch - NomDeLaCarte
+ *
+ * Description courte du sketch.
+ *
+ * Board: Nom complet de la carte
+ * FQBN: le:fqbn:complet
+ *
+ * @dependencies Lib1, Lib2, Lib3
+ */
+```
+
+- Le champ `@dependencies` liste les bibliothèques externes requises (séparées par des virgules)
+- Si aucune bibliothèque externe n'est requise, utiliser `@dependencies (aucune)`
+- Les bibliothèques intégrées aux cores (WiFi, Wire, SPI...) ne sont pas listées
+
+### Gestion des bibliothèques
+
+- Le fichier `libraries.txt` à la racine liste toutes les bibliothèques du projet
+- Quand tu ajoutes une nouvelle bibliothèque, mets à jour ce fichier
+- Le script `setup.sh` installe automatiquement toutes les bibliothèques
+
 ## Structure du projet
 
 Les sketches sont organisés par type de carte dans `sketches/` :

@@ -1,3 +1,14 @@
+/*
+ * LedDemo - Circuit Playground Express
+ *
+ * Animation arc-en-ciel sur les LEDs NeoPixel.
+ *
+ * Board: Adafruit Circuit Playground Express
+ * FQBN: adafruit:samd:adafruit_circuitplayground_m0
+ *
+ * @dependencies Adafruit_CircuitPlayground
+ */
+
 #include <Adafruit_CircuitPlayground.h>
 
 uint8_t offset = 0;

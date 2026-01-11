@@ -2,48 +2,18 @@
 
 Petits programmes de démonstration pour différentes cartes Arduino et compatibles.
 
-## Installation
-
-### Arduino CLI
-
-Télécharger et installer l'Arduino CLI dans le dossier `bin/` :
+## Installation rapide
 
 ```bash
-mkdir -p bin
-cd bin
-curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
-cd ..
+./setup.sh
 ```
 
-Ou télécharger manuellement depuis : https://arduino.github.io/arduino-cli/installation/
+Ce script installe automatiquement :
+- Arduino CLI (dans `bin/`)
+- Les cores des cartes (ESP8266, ESP32, Adafruit SAMD, Arduino AVR)
+- Toutes les bibliothèques listées dans `libraries.txt`
 
-### Cores des cartes
-
-Installer les cores nécessaires :
-
-```bash
-# Ajouter l'URL ESP8266
-./bin/arduino-cli config set board_manager.additional_urls \
-  https://arduino.esp8266.com/stable/package_esp8266com_index.json
-
-# Mettre à jour l'index
-./bin/arduino-cli core update-index
-
-# Installer les cores
-./bin/arduino-cli core install arduino:avr
-./bin/arduino-cli core install esp8266:esp8266
-./bin/arduino-cli core install esp32:esp32
-./bin/arduino-cli core install adafruit:samd
-```
-
-### Bibliothèques
-
-```bash
-./bin/arduino-cli lib install U8g2
-./bin/arduino-cli lib install ArduinoJson
-```
-
-### Credentials WiFi
+## Configuration WiFi
 
 Le fichier `sketches/common/credentials.h` contient les identifiants WiFi et n'est pas versionné.
 
@@ -51,16 +21,10 @@ Le fichier `sketches/common/credentials.h` contient les identifiants WiFi et n'e
 
 ```bash
 cp sketches/common/credentials.h.example sketches/common/credentials.h
+nano sketches/common/credentials.h
 ```
 
-2. Éditer avec tes identifiants :
-
-```c
-#define WIFI_SSID "ton_ssid"
-#define WIFI_PASSWORD "ton_mot_de_passe"
-```
-
-3. Pour chaque projet nécessitant le WiFi, créer un lien symbolique **avec chemin absolu** :
+2. Pour chaque projet nécessitant le WiFi, créer un lien symbolique **avec chemin absolu** :
 
 ```bash
 cd sketches/HW-364B/MonProjet
@@ -71,7 +35,7 @@ ln -s /chemin/absolu/vers/sketches/common/credentials.h credentials.h
 
 ```
 sketches/
-├── common/                      # Fichiers partagés
+├── common/                      # Fichiers partagés (credentials.h)
 ├── CircuitPlayground-Express/   # Carte Adafruit
 ├── HW-364B/                     # ESP8266 + OLED
 └── XIAO-ESP32-C6/               # Carte Seeed Studio
@@ -98,3 +62,9 @@ Uploader sur la carte :
 ```bash
 ./bin/arduino-cli upload --fqbn esp8266:esp8266:nodemcuv2 --port /dev/ttyUSB0 sketches/HW-364B/Bitcoin_Ticker
 ```
+
+## Ajouter une bibliothèque
+
+1. L'installer : `./bin/arduino-cli lib install "NomLib"`
+2. L'ajouter à `libraries.txt`
+3. L'ajouter dans le `@dependencies` du sketch concerné

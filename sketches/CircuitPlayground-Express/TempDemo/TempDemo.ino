@@ -1,3 +1,14 @@
+/*
+ * TempDemo - Circuit Playground Express
+ *
+ * Affichage de la temperature sur les LEDs.
+ *
+ * Board: Adafruit Circuit Playground Express
+ * FQBN: adafruit:samd:adafruit_circuitplayground_m0
+ *
+ * @dependencies Adafruit_CircuitPlayground
+ */
+
 #include <Adafruit_CircuitPlayground.h>
 
 void setup() {
