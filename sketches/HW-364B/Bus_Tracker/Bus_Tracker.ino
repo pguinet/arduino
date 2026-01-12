@@ -36,8 +36,17 @@ U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(
 );
 
 #define YELLOW_ZONE_HEIGHT 16
-#define UPDATE_INTERVAL 30000  // 30 secondes
 #define MAX_DEPARTURES 4
+
+// Intervalles selon plages horaires (en millisecondes)
+#define INTERVAL_RUSH_HOUR 60000      // 1 minute pendant heures de pointe
+#define INTERVAL_NORMAL 120000         // 2 minutes en heures creuses
+#define NIGHT_START_HOUR 20            // Debut mode nuit (20h00)
+#define NIGHT_END_HOUR 6                // Fin du mode nuit (06h00)
+
+// Variables pour gestion du mode nuit
+bool nightMode = false;
+bool displayOff = false;
 
 // Serveur web
 ESP8266WebServer server(80);
@@ -121,6 +130,34 @@ void setupWiFi() {
     setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
     tzset();
     delay(1500);
+  }
+}
+
+// Verifie si on est en mode nuit (20h00-06h00)
+bool isNightMode() {
+  time_t now = time(nullptr);
+  struct tm* ti = localtime(&now);
+  int hour = ti->tm_hour;
+  return (hour >= NIGHT_START_HOUR || hour < NIGHT_END_HOUR);
+}
+
+// Calcule l'intervalle de mise a jour selon l'heure
+unsigned long getUpdateInterval() {
+  time_t now = time(nullptr);
+  struct tm* ti = localtime(&now);
+  int hour = ti->tm_hour;
+
+  // Heures de pointe du matin (06h00-09h00)
+  if (hour >= 6 && hour < 9) {
+    return INTERVAL_RUSH_HOUR;
+  }
+  // Heures de pointe du soir (16h00-18h00)
+  else if (hour >= 16 && hour < 18) {
+    return INTERVAL_RUSH_HOUR;
+  }
+  // Heures creuses (09h00-16h00 et 18h00-20h00)
+  else {
+    return INTERVAL_NORMAL;
   }
 }
 
@@ -219,6 +256,25 @@ void fetchDepartures() {
 }
 
 void updateDisplay() {
+  // Mode nuit : ecran de veille
+  if (nightMode) {
+    if (!displayOff) {
+      u8g2.clearBuffer();
+      u8g2.setFont(u8g2_font_6x10_tr);
+      const char* msg = "Mode veille";
+      int x = (128 - u8g2.getStrWidth(msg)) / 2;
+      u8g2.drawStr(x, 35, msg);
+      u8g2.setFont(u8g2_font_5x7_tr);
+      const char* hours = "Service 06h00-20h00";
+      x = (128 - u8g2.getStrWidth(hours)) / 2;
+      u8g2.drawStr(x, 50, hours);
+      u8g2.sendBuffer();
+      displayOff = true;
+    }
+    return;
+  }
+
+  displayOff = false;
   u8g2.clearBuffer();
 
   // === ZONE JAUNE ===
@@ -343,7 +399,7 @@ void handleRoot() {
   html += config.stopName;
   html += R"=====(</h3>
     <div class="departures" id="deps">Chargement...</div>
-    <div class="info">Mise a jour auto toutes les 30s</div>
+    <div class="info">Mise a jour: 1 min (6h-9h, 16h-18h), 2 min (autres), veille (20h-6h)</div>
   </div>
 
   <div class="card config">
@@ -473,9 +529,15 @@ void setup() {
 void loop() {
   server.handleClient();
 
-  // Mise a jour periodique
-  if (millis() - lastUpdate >= UPDATE_INTERVAL) {
-    fetchDepartures();
+  // Verifier le mode nuit
+  nightMode = isNightMode();
+
+  // Mise a jour periodique (uniquement si pas en mode nuit)
+  if (!nightMode) {
+    unsigned long interval = getUpdateInterval();
+    if (millis() - lastUpdate >= interval) {
+      fetchDepartures();
+    }
   }
 
   updateDisplay();
