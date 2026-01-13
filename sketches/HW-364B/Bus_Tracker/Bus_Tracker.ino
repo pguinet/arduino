@@ -185,9 +185,17 @@ void fetchDepartures() {
     if (httpCode == HTTP_CODE_OK) {
       String payload = https.getString();
 
+      Serial.println("=== DEBUG API Response ===");
+      Serial.printf("Payload size: %d bytes\n", payload.length());
+      Serial.println("Payload preview (first 500 chars):");
+      Serial.println(payload.substring(0, 500));
+      Serial.println("=========================");
+
       // Parser JSON (nesting limit augmente car structure profonde)
       DynamicJsonDocument doc(8192);
       DeserializationError error = deserializeJson(doc, payload, DeserializationOption::NestingLimit(15));
+
+      Serial.printf("JSON parse result: %s\n", error.c_str());
 
       if (!error) {
         JsonArray visits = doc["Siri"]["ServiceDelivery"]["StopMonitoringDelivery"][0]["MonitoredStopVisit"];
