@@ -183,11 +183,35 @@ void fetchDepartures() {
     int httpCode = https.GET();
 
     if (httpCode == HTTP_CODE_OK) {
-      // Lire la reponse (getString decode automatiquement le chunked encoding)
-      String payload = https.getString();
+      // Lire la reponse
+      WiFiClient* stream = https.getStreamPtr();
+      stream->setTimeout(15000);  // 15 secondes timeout
+      String payload = stream->readString();
 
-      // Parser JSON (8KB necessaire pour la reponse complete)
-      DynamicJsonDocument doc(8192);
+      // Verifier que la reponse n'est pas vide
+      if (payload.length() < 100) {
+        strcpy(errorMsg, "Reponse vide");
+        dataValid = false;
+        https.end();
+        lastUpdate = millis();
+        return;
+      }
+
+      // Chercher le debut du JSON (ignore caracteres parasites)
+      int jsonStart = payload.indexOf('{');
+      if (jsonStart < 0) {
+        strcpy(errorMsg, "Pas de JSON");
+        dataValid = false;
+        https.end();
+        lastUpdate = millis();
+        return;
+      }
+      if (jsonStart > 0) {
+        payload = payload.substring(jsonStart);
+      }
+
+      // Parser JSON (16KB pour laisser de la marge)
+      DynamicJsonDocument doc(16384);
       DeserializationError error = deserializeJson(doc, payload,
         DeserializationOption::NestingLimit(15));
 
@@ -239,7 +263,7 @@ void fetchDepartures() {
         sprintf(lastUpdateTime, "%02d:%02d", ti->tm_hour, ti->tm_min);
 
       } else {
-        strcpy(errorMsg, "Erreur JSON");
+        sprintf(errorMsg, "JSON: %s", error.c_str());
         dataValid = false;
       }
     } else {
