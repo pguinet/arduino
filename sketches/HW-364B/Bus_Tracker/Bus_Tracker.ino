@@ -52,12 +52,13 @@ bool displayOff = false;
 ESP8266WebServer server(80);
 
 // Configuration (sauvegardee en EEPROM)
-#define CONFIG_MAGIC 0xB055  // Magic number pour detecter config valide
+#define CONFIG_MAGIC 0xB056  // Magic number pour detecter config valide (incremente pour reset)
 struct Config {
   uint16_t magic;        // Magic number pour validation
   char stopId[20];       // Ex: "413248"
   char stopName[30];     // Ex: "Marechal Foch"
   char lineName[10];     // Ex: "269"
+  char lineRef[12];      // Ex: "C01252" (ID ligne pour filtrage)
   char direction[40];    // Ex: "Garges-Sarcelles RER"
 } config;
 
@@ -85,11 +86,12 @@ void loadConfig() {
   // Verifier le magic number pour detecter une config corrompue
   if (config.magic != CONFIG_MAGIC || strlen(config.stopId) == 0) {
     Serial.println("Config invalide, reinitialisation...");
-    // Config par defaut: Marechal Foch -> Garges-Sarcelles RER
+    // Config par defaut: Marechal Foch -> Garges-Sarcelles RER (ligne 269)
     config.magic = CONFIG_MAGIC;
     strcpy(config.stopId, "413248");
     strcpy(config.stopName, "Marechal Foch");
     strcpy(config.lineName, "269");
+    strcpy(config.lineRef, "C01252");
     strcpy(config.direction, "Garges-Sarcelles RER");
     saveConfig();
   }
@@ -162,6 +164,10 @@ unsigned long getUpdateInterval() {
 }
 
 void fetchDepartures() {
+  fetchDeparturesWithRetry(2);  // 2 tentatives max
+}
+
+void fetchDeparturesWithRetry(int maxRetries) {
   if (WiFi.status() != WL_CONNECTED) {
     strcpy(errorMsg, "WiFi deconnecte");
     dataValid = false;
@@ -170,6 +176,21 @@ void fetchDepartures() {
 
   client.setInsecure();
 
+  for (int attempt = 1; attempt <= maxRetries; attempt++) {
+    if (attempt > 1) {
+      Serial.printf("Retry %d/%d\n", attempt, maxRetries);
+      delay(1000);  // Attendre 1s avant de reessayer
+    }
+
+    if (tryFetchDepartures()) {
+      return;  // Succes
+    }
+  }
+  // Toutes les tentatives ont echoue, errorMsg est deja defini
+  lastUpdate = millis();
+}
+
+bool tryFetchDepartures() {
   HTTPClient https;
   // URL avec MonitoringRef encode (: -> %3A)
   String url = "https://prim.iledefrance-mobilites.fr/marketplace/stop-monitoring?MonitoringRef=STIF%3AStopPoint%3AQ%3A";
@@ -183,37 +204,45 @@ void fetchDepartures() {
     int httpCode = https.GET();
 
     if (httpCode == HTTP_CODE_OK) {
-      // Lire la reponse
+      // Lire via stream avec timeout long (chunked encoding peut etre lent)
       WiFiClient* stream = https.getStreamPtr();
-      stream->setTimeout(15000);  // 15 secondes timeout
+      stream->setTimeout(30000);
       String payload = stream->readString();
 
-      // Verifier que la reponse n'est pas vide
+      Serial.printf("Heap: %d, len: %d\n", ESP.getFreeHeap(), payload.length());
+
       if (payload.length() < 100) {
-        strcpy(errorMsg, "Reponse vide");
+        sprintf(errorMsg, "Len=%d", payload.length());
         dataValid = false;
         https.end();
-        lastUpdate = millis();
-        return;
+        return false;
       }
 
-      // Chercher le debut du JSON (ignore caracteres parasites)
-      int jsonStart = payload.indexOf('{');
-      if (jsonStart < 0) {
-        strcpy(errorMsg, "Pas de JSON");
+      // Trouver le debut du JSON
+      int start = payload.indexOf('{');
+      if (start < 0) {
+        strcpy(errorMsg, "No JSON");
         dataValid = false;
         https.end();
-        lastUpdate = millis();
-        return;
-      }
-      if (jsonStart > 0) {
-        payload = payload.substring(jsonStart);
+        return false;
       }
 
-      // Parser JSON (16KB pour laisser de la marge)
-      DynamicJsonDocument doc(16384);
-      DeserializationError error = deserializeJson(doc, payload,
+      // Filtre pour ne garder que les champs utiles (reduit la memoire)
+      StaticJsonDocument<200> filter;
+      JsonObject visitFilter = filter["Siri"]["ServiceDelivery"]["StopMonitoringDelivery"][0]["MonitoredStopVisit"][0]["MonitoredVehicleJourney"];
+      visitFilter["LineRef"]["value"] = true;
+      visitFilter["DestinationName"][0]["value"] = true;
+      visitFilter["MonitoredCall"]["ExpectedDepartureTime"] = true;
+      visitFilter["MonitoredCall"]["VehicleAtStop"] = true;
+
+      // Parser JSON avec filtre (2KB suffisent avec le filtre)
+      DynamicJsonDocument doc(2048);
+      DeserializationError error = deserializeJson(doc, payload.c_str() + start,
+        DeserializationOption::Filter(filter),
         DeserializationOption::NestingLimit(15));
+
+      // Liberer le payload
+      payload = String();
 
       if (!error) {
         JsonArray visits = doc["Siri"]["ServiceDelivery"]["StopMonitoringDelivery"][0]["MonitoredStopVisit"];
@@ -223,6 +252,14 @@ void fetchDepartures() {
 
         for (JsonObject visit : visits) {
           if (departureCount >= MAX_DEPARTURES) break;
+
+          // Filtrer par ligne si configuree
+          const char* lineRef = visit["MonitoredVehicleJourney"]["LineRef"]["value"];
+          if (strlen(config.lineRef) > 0 && lineRef) {
+            if (strstr(lineRef, config.lineRef) == NULL) {
+              continue;  // Pas la bonne ligne, ignorer
+            }
+          }
 
           const char* expectedTime = visit["MonitoredVehicleJourney"]["MonitoredCall"]["ExpectedDepartureTime"];
           const char* destName = visit["MonitoredVehicleJourney"]["DestinationName"][0]["value"];
@@ -262,6 +299,10 @@ void fetchDepartures() {
         struct tm* ti = localtime(&now);
         sprintf(lastUpdateTime, "%02d:%02d", ti->tm_hour, ti->tm_min);
 
+        https.end();
+        lastUpdate = millis();
+        return true;  // Succes
+
       } else {
         sprintf(errorMsg, "JSON: %s", error.c_str());
         dataValid = false;
@@ -277,7 +318,7 @@ void fetchDepartures() {
     dataValid = false;
   }
 
-  lastUpdate = millis();
+  return false;  // Echec, peut reessayer
 }
 
 void updateDisplay() {
@@ -439,9 +480,13 @@ void handleRoot() {
       <input type="text" name="stopName" value=")=====";
   html += config.stopName;
   html += R"=====(">
-      <label>Ligne</label>
+      <label>Ligne (affichage)</label>
       <input type="text" name="lineName" value=")=====";
   html += config.lineName;
+  html += R"=====(">
+      <label>ID Ligne (ex: C01252)</label>
+      <input type="text" name="lineRef" value=")=====";
+  html += config.lineRef;
   html += R"=====(">
       <label>Direction</label>
       <input type="text" name="direction" value=")=====";
@@ -523,6 +568,9 @@ void handleConfig() {
   }
   if (server.hasArg("lineName")) {
     server.arg("lineName").toCharArray(config.lineName, sizeof(config.lineName));
+  }
+  if (server.hasArg("lineRef")) {
+    server.arg("lineRef").toCharArray(config.lineRef, sizeof(config.lineRef));
   }
   if (server.hasArg("direction")) {
     server.arg("direction").toCharArray(config.direction, sizeof(config.direction));
