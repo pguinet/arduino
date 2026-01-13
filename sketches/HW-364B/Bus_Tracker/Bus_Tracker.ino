@@ -36,7 +36,7 @@ U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(
 );
 
 #define YELLOW_ZONE_HEIGHT 16
-#define MAX_DEPARTURES 4
+#define MAX_DEPARTURES 2
 
 // Intervalles selon plages horaires (en millisecondes)
 #define INTERVAL_RUSH_HOUR 60000      // 1 minute pendant heures de pointe
@@ -183,19 +183,13 @@ void fetchDepartures() {
     int httpCode = https.GET();
 
     if (httpCode == HTTP_CODE_OK) {
+      // Lire la reponse (getString decode automatiquement le chunked encoding)
       String payload = https.getString();
 
-      Serial.println("=== DEBUG API Response ===");
-      Serial.printf("Payload size: %d bytes\n", payload.length());
-      Serial.println("Payload preview (first 500 chars):");
-      Serial.println(payload.substring(0, 500));
-      Serial.println("=========================");
-
-      // Parser JSON (nesting limit augmente car structure profonde)
+      // Parser JSON (8KB necessaire pour la reponse complete)
       DynamicJsonDocument doc(8192);
-      DeserializationError error = deserializeJson(doc, payload, DeserializationOption::NestingLimit(15));
-
-      Serial.printf("JSON parse result: %s\n", error.c_str());
+      DeserializationError error = deserializeJson(doc, payload,
+        DeserializationOption::NestingLimit(15));
 
       if (!error) {
         JsonArray visits = doc["Siri"]["ServiceDelivery"]["StopMonitoringDelivery"][0]["MonitoredStopVisit"];
@@ -244,7 +238,6 @@ void fetchDepartures() {
         struct tm* ti = localtime(&now);
         sprintf(lastUpdateTime, "%02d:%02d", ti->tm_hour, ti->tm_min);
 
-        Serial.printf("Fetched %d departures\n", departureCount);
       } else {
         strcpy(errorMsg, "Erreur JSON");
         dataValid = false;
@@ -306,29 +299,30 @@ void updateDisplay() {
       u8g2.drawStr(5, 35, "Chargement...");
     }
   } else if (departureCount == 0) {
-    u8g2.setFont(u8g2_font_6x10_tr);
-    u8g2.drawStr(5, 35, "Aucun bus prevu");
+    u8g2.setFont(u8g2_font_ncenB12_tr);
+    u8g2.drawStr(5, 40, "Aucun bus prevu");
   } else {
-    u8g2.setFont(u8g2_font_6x10_tr);
+    // Police plus grande pour 2 passages
+    u8g2.setFont(u8g2_font_ncenB14_tr);
 
-    int yPos = 28;
-    for (int i = 0; i < departureCount && i < 4; i++) {
-      char line[25];
+    int yPos = 34;
+    for (int i = 0; i < departureCount && i < 2; i++) {
+      char line[20];
 
       if (departures[i].atStop) {
-        sprintf(line, ">> A L'ARRET");
+        sprintf(line, "A L'ARRET");
       } else if (departures[i].minutesLeft == 0) {
-        sprintf(line, ">> Imminent");
+        sprintf(line, "Imminent");
       } else if (departures[i].minutesLeft < 60) {
-        sprintf(line, ">> %d min", departures[i].minutesLeft);
+        sprintf(line, "%d min", departures[i].minutesLeft);
       } else {
         int h = departures[i].minutesLeft / 60;
         int m = departures[i].minutesLeft % 60;
-        sprintf(line, ">> %dh%02d", h, m);
+        sprintf(line, "%dh%02d", h, m);
       }
 
-      u8g2.drawStr(0, yPos, line);
-      yPos += 11;
+      u8g2.drawStr(5, yPos, line);
+      yPos += 18;
     }
   }
 
@@ -339,8 +333,8 @@ void updateDisplay() {
   // Direction en bas
   u8g2.setFont(u8g2_font_5x7_tr);
   char dirShort[20];
-  strncpy(dirShort, config.direction, 15);
-  dirShort[15] = '\0';
+  strncpy(dirShort, config.direction, 18);
+  dirShort[18] = '\0';
   int dirX = 128 - u8g2.getStrWidth(dirShort);
   u8g2.drawStr(dirX, 63, dirShort);
 
@@ -490,6 +484,12 @@ void handleApi() {
   server.send(200, "application/json", json);
 }
 
+void handleRefresh() {
+  fetchDepartures();
+  server.sendHeader("Location", "/api");
+  server.send(303);
+}
+
 void handleConfig() {
   if (server.hasArg("stopId")) {
     server.arg("stopId").toCharArray(config.stopId, sizeof(config.stopId));
@@ -524,6 +524,7 @@ void setup() {
 
   server.on("/", handleRoot);
   server.on("/api", handleApi);
+  server.on("/refresh", handleRefresh);
   server.on("/config", HTTP_POST, handleConfig);
   server.begin();
 
