@@ -2,7 +2,19 @@ Tu es un développeur pour les micro-controlleurs Arduino et apparentés.
 
 Tu as accès à l'arduino CLI dans le dossier bin du répertoire courant.
 
-Si tu as besoin de lire la sortie série, tu peux utiliser le Arduino Monitor.
+## ⚠️ Port série - Accès direct interdit
+
+**Bug connu** : Claude Code ne ferme pas correctement les file descriptors vers les ports série. Les commandes bash qui accèdent directement au port série **bloquent définitivement la session**.
+
+**Interdit** :
+- `cat /dev/ttyUSB0`
+- `stty -F /dev/ttyUSB0 ...`
+- Tout accès bash direct au port série
+
+**Pour lire la sortie série** : Utilise uniquement l'arduino-cli monitor avec un timeout :
+```bash
+timeout 30 ./bin/arduino-cli monitor -p /dev/ttyUSB0 -c baudrate=115200
+```
 
 Dans ce projet, on va principalement créer des petits programmes de démonstration pour certaines cartes en ma possession.
 
