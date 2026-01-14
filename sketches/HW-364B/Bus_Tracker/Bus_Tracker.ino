@@ -39,10 +39,10 @@ U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(
 #define MAX_DEPARTURES 2
 
 // Intervalles selon plages horaires (en millisecondes)
-#define INTERVAL_RUSH_HOUR 60000      // 1 minute pendant heures de pointe
+#define INTERVAL_RUSH_HOUR 20000      // 20s d'attente (~1 min effective avec traitement)
 #define INTERVAL_NORMAL 120000         // 2 minutes en heures creuses
 #define NIGHT_START_HOUR 20            // Debut mode nuit (20h00)
-#define NIGHT_END_HOUR 6                // Fin du mode nuit (06h00)
+#define NIGHT_END_HOUR 6               // Fin du mode nuit (06h00)
 
 // Variables pour gestion du mode nuit
 bool nightMode = false;
@@ -204,12 +204,8 @@ bool tryFetchDepartures() {
     int httpCode = https.GET();
 
     if (httpCode == HTTP_CODE_OK) {
-      // Lire via stream avec timeout long (chunked encoding peut etre lent)
-      WiFiClient* stream = https.getStreamPtr();
-      stream->setTimeout(30000);
-      String payload = stream->readString();
-
-      Serial.printf("Heap: %d, len: %d\n", ESP.getFreeHeap(), payload.length());
+      // getString() decode automatiquement le chunked encoding
+      String payload = https.getString();
 
       if (payload.length() < 100) {
         sprintf(errorMsg, "Len=%d", payload.length());
@@ -227,18 +223,9 @@ bool tryFetchDepartures() {
         return false;
       }
 
-      // Filtre pour ne garder que les champs utiles (reduit la memoire)
-      StaticJsonDocument<200> filter;
-      JsonObject visitFilter = filter["Siri"]["ServiceDelivery"]["StopMonitoringDelivery"][0]["MonitoredStopVisit"][0]["MonitoredVehicleJourney"];
-      visitFilter["LineRef"]["value"] = true;
-      visitFilter["DestinationName"][0]["value"] = true;
-      visitFilter["MonitoredCall"]["ExpectedDepartureTime"] = true;
-      visitFilter["MonitoredCall"]["VehicleAtStop"] = true;
-
-      // Parser JSON avec filtre (2KB suffisent avec le filtre)
-      DynamicJsonDocument doc(2048);
+      // Parser JSON sans filtre (besoin de plus de memoire)
+      DynamicJsonDocument doc(4096);
       DeserializationError error = deserializeJson(doc, payload.c_str() + start,
-        DeserializationOption::Filter(filter),
         DeserializationOption::NestingLimit(15));
 
       // Liberer le payload
@@ -466,7 +453,7 @@ void handleRoot() {
   html += config.stopName;
   html += R"=====(</h3>
     <div class="departures" id="deps">Chargement...</div>
-    <div class="info">Mise a jour: 1 min (6h-9h, 16h-18h), 2 min (autres), veille (20h-6h)</div>
+    <div class="info">Mise a jour: ~1 min (6h-9h, 16h-18h), ~2 min (autres), veille (20h-6h)</div>
   </div>
 
   <div class="card config">
