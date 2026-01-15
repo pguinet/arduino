@@ -1,18 +1,8 @@
 {
   "enabledPlugins": {
     "voltagent-domains@voltagent-subagents": true,
-    "voltagent-meta@voltagent-subagents": true
-  },
-  "permissions": {
-    "deny": [
-      "Task(sonarqube-quality-checker)",
-      "Task(java-unit-test-writer)",
-      "Task(pr-review-toolkit:code-reviewer)",
-      "Task(pr-review-toolkit:comment-analyzer)",
-      "Task(pr-review-toolkit:pr-test-analyzer)",
-      "Task(pr-review-toolkit:silent-failure-hunter)",
-      "Task(pr-review-toolkit:type-design-analyzer)",
-      "Task(pr-review-toolkit:code-simplifier)"
-    ]
+    "voltagent-meta@voltagent-subagents": true,
+    "pr-review-toolkit@claude-plugins-official": false,
+    "frontend-design@claude-plugins-official": false
   }
 }
