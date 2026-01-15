@@ -16,6 +16,10 @@ Tu as accès à l'arduino CLI dans le dossier bin du répertoire courant.
 timeout 30 ./bin/arduino-cli monitor -p /dev/ttyUSB0 -c baudrate=115200
 ```
 
+## Git
+
+**Projet personnel** : Il s'agit d'un projet personnel. Ne pas demander de numéro Jira pour les commits git. Utilise des messages de commit descriptifs sans préfixe.
+
 Dans ce projet, on va principalement créer des petits programmes de démonstration pour certaines cartes en ma possession.
 
 Ah et pour etre plus amical, tu peux me tutoyer.
