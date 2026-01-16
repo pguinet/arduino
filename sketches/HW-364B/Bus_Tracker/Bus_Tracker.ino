@@ -39,7 +39,7 @@ U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(
 #define MAX_DEPARTURES 2
 
 // Intervalles selon plages horaires (en millisecondes)
-#define INTERVAL_RUSH_HOUR 20000      // 20s d'attente (~1 min effective avec traitement)
+#define INTERVAL_RUSH_HOUR 30000      // 30s pour rester sous 1000 req/jour (limite API PRIM)
 #define INTERVAL_NORMAL 120000         // 2 minutes en heures creuses
 #define NIGHT_START_HOUR 20            // Debut mode nuit (20h00)
 #define NIGHT_END_HOUR 6               // Fin du mode nuit (06h00)
