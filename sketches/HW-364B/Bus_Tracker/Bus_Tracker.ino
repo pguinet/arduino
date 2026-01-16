@@ -197,6 +197,8 @@ bool tryFetchDepartures() {
   url += config.stopId;
   url += "%3A";
 
+  Serial.printf("Free heap before request: %d\n", ESP.getFreeHeap());
+
   if (https.begin(client, url)) {
     https.addHeader("Accept", "application/json");
     https.addHeader("apikey", PRIM_API_KEY);
@@ -204,11 +206,17 @@ bool tryFetchDepartures() {
     int httpCode = https.GET();
 
     if (httpCode == HTTP_CODE_OK) {
+      int contentLen = https.getSize();
+      Serial.printf("Content-Length: %d, Free heap: %d\n", contentLen, ESP.getFreeHeap());
+
       // getString() decode automatiquement le chunked encoding
       String payload = https.getString();
 
+      Serial.printf("Payload length: %d, Free heap after: %d\n", payload.length(), ESP.getFreeHeap());
+
       if (payload.length() < 100) {
-        sprintf(errorMsg, "Len=%d", payload.length());
+        sprintf(errorMsg, "Len%d H%d", payload.length(), ESP.getFreeHeap()/1024);
+        Serial.printf("ERROR: Payload too short! Len=%d\n", payload.length());
         dataValid = false;
         https.end();
         return false;
@@ -223,8 +231,8 @@ bool tryFetchDepartures() {
         return false;
       }
 
-      // Parser JSON sans filtre (besoin de plus de memoire)
-      DynamicJsonDocument doc(4096);
+      // Parser JSON (le filtre posait probleme, on garde la methode simple)
+      DynamicJsonDocument doc(6144);  // Augmente de 4K a 6K
       DeserializationError error = deserializeJson(doc, payload.c_str() + start,
         DeserializationOption::NestingLimit(15));
 
