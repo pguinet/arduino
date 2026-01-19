@@ -148,16 +148,17 @@ unsigned long getUpdateInterval() {
   time_t now = time(nullptr);
   struct tm* ti = localtime(&now);
   int hour = ti->tm_hour;
+  int minute = ti->tm_min;
 
-  // Heures de pointe du matin (06h00-09h00)
-  if (hour >= 6 && hour < 9) {
+  // Heures de pointe du matin (06h30-09h00)
+  if ((hour == 6 && minute >= 30) || (hour >= 7 && hour < 9)) {
     return INTERVAL_RUSH_HOUR;
   }
   // Heures de pointe du soir (16h00-18h00)
   else if (hour >= 16 && hour < 18) {
     return INTERVAL_RUSH_HOUR;
   }
-  // Heures creuses (09h00-16h00 et 18h00-20h00)
+  // Heures creuses
   else {
     return INTERVAL_NORMAL;
   }
