@@ -199,24 +199,56 @@ bool tryFetchDepartures() {
 
   Serial.printf("Free heap before request: %d\n", ESP.getFreeHeap());
 
+  // Timeout plus long pour l'API PRIM (parfois lente)
+  https.setTimeout(15000);
+
   if (https.begin(client, url)) {
     https.addHeader("Accept", "application/json");
     https.addHeader("apikey", PRIM_API_KEY);
 
     int httpCode = https.GET();
+    Serial.printf("HTTP code: %d\n", httpCode);
 
     if (httpCode == HTTP_CODE_OK) {
       int contentLen = https.getSize();
       Serial.printf("Content-Length: %d, Free heap: %d\n", contentLen, ESP.getFreeHeap());
 
-      // getString() decode automatiquement le chunked encoding
-      String payload = https.getString();
+      // Lecture manuelle du stream avec timeout (plus fiable que getString pour chunked)
+      WiFiClient* stream = https.getStreamPtr();
+      String payload;
+      payload.reserve(6000);  // Pre-allouer pour eviter fragmentations
 
-      Serial.printf("Payload length: %d, Free heap after: %d\n", payload.length(), ESP.getFreeHeap());
+      unsigned long readStart = millis();
+      unsigned long lastDataTime = millis();
+      const unsigned long READ_TIMEOUT = 15000;      // 15s max total
+      const unsigned long IDLE_TIMEOUT = 2000;       // 2s sans donnees = fin
+
+      while (https.connected() && (millis() - readStart < READ_TIMEOUT)) {
+        size_t available = stream->available();
+        if (available) {
+          char buf[512];
+          int bytesRead = stream->readBytes(buf, min(available, sizeof(buf)));
+          payload.concat(buf, bytesRead);
+          lastDataTime = millis();  // Reset idle timeout
+        } else {
+          // Verifier si idle timeout atteint (chunked sans Content-Length)
+          if (payload.length() > 0 && (millis() - lastDataTime > IDLE_TIMEOUT)) {
+            Serial.println("Idle timeout - assuming transfer complete");
+            break;
+          }
+          delay(10);
+        }
+
+        // Sortir si on a assez de donnees (avec Content-Length)
+        if (contentLen > 0 && (int)payload.length() >= contentLen) break;
+      }
+
+      Serial.printf("Payload length: %d, Read time: %lums, Free heap: %d\n",
+                    payload.length(), millis() - readStart, ESP.getFreeHeap());
 
       if (payload.length() < 100) {
         sprintf(errorMsg, "Len%d H%d", payload.length(), ESP.getFreeHeap()/1024);
-        Serial.printf("ERROR: Payload too short! Len=%d\n", payload.length());
+        Serial.printf("ERROR: Payload too short! First 50 chars: %.50s\n", payload.c_str());
         dataValid = false;
         https.end();
         return false;
@@ -231,9 +263,18 @@ bool tryFetchDepartures() {
         return false;
       }
 
-      // Parser JSON (le filtre posait probleme, on garde la methode simple)
-      DynamicJsonDocument doc(6144);  // Augmente de 4K a 6K
+      // Filtre JSON pour n'extraire que les champs necessaires (economie memoire)
+      StaticJsonDocument<256> filter;
+      JsonObject filterVisit = filter["Siri"]["ServiceDelivery"]["StopMonitoringDelivery"][0]["MonitoredStopVisit"].createNestedObject();
+      filterVisit["MonitoredVehicleJourney"]["LineRef"]["value"] = true;
+      filterVisit["MonitoredVehicleJourney"]["MonitoredCall"]["ExpectedDepartureTime"] = true;
+      filterVisit["MonitoredVehicleJourney"]["MonitoredCall"]["VehicleAtStop"] = true;
+      filterVisit["MonitoredVehicleJourney"]["DestinationName"][0]["value"] = true;
+
+      // Parser avec filtre - reduit la memoire de 8K a 2K
+      DynamicJsonDocument doc(2048);
       DeserializationError error = deserializeJson(doc, payload.c_str() + start,
+        DeserializationOption::Filter(filter),
         DeserializationOption::NestingLimit(15));
 
       // Liberer le payload
@@ -299,6 +340,7 @@ bool tryFetchDepartures() {
         return true;  // Succes
 
       } else {
+        Serial.printf("JSON parse error: %s\n", error.c_str());
         sprintf(errorMsg, "JSON: %s", error.c_str());
         dataValid = false;
       }
