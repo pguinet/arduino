@@ -58,6 +58,7 @@ Chaque sketch doit avoir un en-tête standardisé :
 Les sketches sont organisés par type de carte dans `sketches/` :
 - `CircuitPlayground-Express/` - Carte Adafruit avec LEDs, capteurs intégrés
 - `HW-364B/` - ESP8266 avec écran OLED bicolore (jaune/bleu) intégré
+- `JC3248W535C/` - ESP32-S3 avec écran tactile 3.5" IPS 320×480
 - `XIAO-ESP32-C6/` - Carte Seeed Studio avec WiFi
 
 ## Fichiers communs
@@ -76,6 +77,7 @@ ln -s /chemin/absolu/vers/sketches/common/credentials.h credentials.h
 |-------|------|
 | Circuit Playground Express | `adafruit:samd:adafruit_circuitplayground_m0` |
 | HW-364B (ESP8266 + OLED) | `esp8266:esp8266:nodemcuv2` |
+| JC3248W535C (ESP32-S3 + LCD tactile) | `esp32:esp32:esp32s3` |
 | XIAO ESP32-C6 | `esp32:esp32:XIAO_ESP32C6` |
 
 ## HW-364B
@@ -95,3 +97,56 @@ Carte ESP8266 avec écran OLED 0.96" intégré (SSD1306).
 - `NTP_Clock` - Horloge NTP + configuration web (timezone, format)
 - `Mini_Dashboard` - Dashboard interactif web ↔ OLED (sliders, toggles, messages)
 - `Bitcoin_Ticker` - Cours du Bitcoin en USD via API CoinGecko (maj toutes les 60s)
+
+## JC3248W535C
+
+Carte ESP32-S3 avec écran tactile capacitif 3.5" IPS (320×480).
+
+**MCU** : ESP32-S3-WROOM-1 (dual-core Xtensa LX7 240MHz, WiFi, Bluetooth 5)
+
+**Écran LCD** (contrôleur AXS15231B, interface QSPI) :
+| Signal | GPIO |
+|--------|------|
+| CS | 45 |
+| SCK | 47 |
+| SDA0 | 21 |
+| SDA1 | 48 |
+| SDA2 | 40 |
+| SDA3 | 39 |
+| TE | 38 |
+| Backlight | 1 |
+
+**Tactile** (I2C) :
+| Signal | GPIO |
+|--------|------|
+| SDA | 4 |
+| SCL | 8 |
+| INT | 3 |
+
+**Audio** (I2S via NS4168) :
+| Signal | GPIO |
+|--------|------|
+| BCK | 42 |
+| LRCK | 2 |
+| DOUT | 41 |
+
+**Carte SD** (MMC) :
+| Signal | GPIO |
+|--------|------|
+| D0 | 13 |
+| CLK | 12 |
+| CMD | 11 |
+
+**Batterie ADC** : GPIO5
+
+**Prérequis** :
+- ESP32 Arduino Core **v3.0.2** obligatoire
+- Pour la lecture vidéo MJPEG : PSRAM à 120MHz (voir doc vendeur)
+- La doc vendeur est dans `sketches/JC3248W535C/doc/` (non versionnée)
+
+**Bibliothèques recommandées** :
+- LVGL pour l'interface graphique
+- Drivers fournis par le vendeur (esp_lcd_axs15231b, esp_bsp)
+
+**Sketches disponibles** :
+- (aucun pour l'instant)

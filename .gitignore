@@ -12,3 +12,7 @@ build/
 *.elf
 *.bin
 *.hex
+
+# Doc du constructeur
+# http://pan.jczn1688.com/directlink/1/HMI%20display/JC3248W535EN.zip
+JC3248W535EN/
