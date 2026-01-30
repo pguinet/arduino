@@ -139,14 +139,17 @@ Carte ESP32-S3 avec écran tactile capacitif 3.5" IPS (320×480).
 
 **Batterie ADC** : GPIO5
 
+**Documentation** :
+- Repo GitHub avec doc complète et exemples : https://github.com/pguinet/JC3248W535EN
+- Doc vendeur locale dans `sketches/JC3248W535C/doc/` (non versionnée)
+
 **Prérequis** :
 - ESP32 Arduino Core **v3.0.2** obligatoire
 - Pour la lecture vidéo MJPEG : PSRAM à 120MHz (voir doc vendeur)
-- La doc vendeur est dans `sketches/JC3248W535C/doc/` (non versionnée)
 
 **Bibliothèques recommandées** :
 - LVGL pour l'interface graphique
 - Drivers fournis par le vendeur (esp_lcd_axs15231b, esp_bsp)
 
 **Sketches disponibles** :
-- (aucun pour l'instant)
+- `HelloWorld` - Test basique de l'afficheur (en cours)
