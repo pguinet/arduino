@@ -100,7 +100,12 @@ Carte ESP8266 avec écran OLED 0.96" intégré (SSD1306).
 
 ## JC3248W535C
 
-Carte ESP32-S3 avec écran tactile capacitif 3.5" IPS (320×480).
+Carte ESP32-S3 avec écran tactile capacitif 3.5" IPS (320×480). Vendeur : Guition / DIYmalls.
+
+**Documentation** :
+- [Manuel PDF officiel](https://device.report/m/83db5d9ce65e7142ed6ae1aebe9697ac3d0c9b10640264803888a4397eddb7b1.pdf)
+- [Guide de setup F1ATB](https://f1atb.fr/esp32-s3-3-5-inch-capacitive-touch-ips-display-setup/)
+- [Projet ESPHome/LVGL](https://github.com/gizmo-boss/esphome-lvgl-dashboard)
 
 **MCU** : ESP32-S3-WROOM-1 (dual-core Xtensa LX7 240MHz, WiFi, Bluetooth 5)
 
@@ -147,9 +152,30 @@ Carte ESP32-S3 avec écran tactile capacitif 3.5" IPS (320×480).
 - ESP32 Arduino Core **v3.0.2** obligatoire
 - Pour la lecture vidéo MJPEG : PSRAM à 120MHz (voir doc vendeur)
 
-**Bibliothèques recommandées** :
-- LVGL pour l'interface graphique
-- Drivers fournis par le vendeur (esp_lcd_axs15231b, esp_bsp)
+**⚠️ Framework** : Cette carte utilise **PlatformIO avec ESP-IDF** (pas Arduino).
+- Arduino_GFX ne fonctionne pas correctement avec l'interface QSPI de cet écran (seul fillScreen marche, pas drawPixel/text)
+- Le projet de base est cloné depuis [NorthernMan54/JC3248W535EN](https://github.com/NorthernMan54/JC3248W535EN)
 
-**Sketches disponibles** :
-- `HelloWorld` - Test basique de l'afficheur (en cours)
+**Compilation/Upload** :
+```bash
+cd sketches/JC3248W535C/JC3248W535EN
+pio run                              # Compiler
+pio run -t upload -p /dev/ttyACM0    # Uploader
+pio device monitor -p /dev/ttyACM0   # Monitor série
+```
+
+**Bibliothèques utilisées** :
+- LVGL 8.4 pour l'interface graphique
+- esp_lcd (ESP-IDF) pour le driver écran
+- Drivers custom: esp_lcd_axs15231b, esp_bsp
+
+**Problème connu** : Fines barres verticales visibles sur l'écran (présentes aussi dans la démo originale).
+Probablement une limitation du driver QSPI ou du panneau. Réduire la fréquence QSPI (40→20 MHz) n'a pas aidé.
+
+**Modifications apportées** :
+- `partitions.csv` : Table de partition personnalisée avec app de 3MB (nécessaire pour WiFi+LVGL)
+- `platformio.ini` : Ajout de `board_build.partitions = partitions.csv`
+
+**Projets disponibles** :
+- `HelloWorld/` - Test basique de l'afficheur (en cours)
+- `JC3248W535EN/` - WiFi Scanner avec interface LVGL (scan auto toutes les 10s, bouton SCAN, liste colorée par signal)
