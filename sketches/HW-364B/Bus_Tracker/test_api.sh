@@ -11,7 +11,8 @@ STOP_NAME="Marechal Foch"
 LINE_NAME="269"
 DIRECTION="Garges-Sarcelles RER"
 
-API_KEY="ZjD8SM0Slg9KbpvQFHubaaQXRPgcmzW7"
+# IMPORTANT: Remplacer par ton token PRIM (https://prim.iledefrance-mobilites.fr/)
+API_KEY="VOTRE_TOKEN_PRIM_ICI"
 URL="https://prim.iledefrance-mobilites.fr/marketplace/stop-monitoring?MonitoringRef=STIF%3AStopPoint%3AQ%3A${STOP_ID}%3A"
 
 # Durée et intervalle
