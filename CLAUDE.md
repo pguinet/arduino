@@ -105,9 +105,9 @@ Carte ESP32-S3 avec écran tactile capacitif 3.5" IPS (320×480). Vendeur : Guit
 **Documentation** :
 - [Manuel PDF officiel](https://device.report/m/83db5d9ce65e7142ed6ae1aebe9697ac3d0c9b10640264803888a4397eddb7b1.pdf)
 - [Guide de setup F1ATB](https://f1atb.fr/esp32-s3-3-5-inch-capacitive-touch-ips-display-setup/)
-- [Projet ESPHome/LVGL](https://github.com/gizmo-boss/esphome-lvgl-dashboard)
+- [Repo NorthernMan54/JC3248W535EN](https://github.com/NorthernMan54/JC3248W535EN) - Base technique utilisée
 
-**MCU** : ESP32-S3-WROOM-1 (dual-core Xtensa LX7 240MHz, WiFi, Bluetooth 5)
+**MCU** : ESP32-S3-WROOM-1 (dual-core Xtensa LX7 240MHz, WiFi, Bluetooth 5, PSRAM 8MB)
 
 **Écran LCD** (contrôleur AXS15231B, interface QSPI) :
 | Signal | GPIO |
@@ -144,38 +144,19 @@ Carte ESP32-S3 avec écran tactile capacitif 3.5" IPS (320×480). Vendeur : Guit
 
 **Batterie ADC** : GPIO5
 
-**Documentation** :
-- Repo GitHub avec doc complète et exemples : https://github.com/pguinet/JC3248W535EN
-- Doc vendeur locale dans `sketches/JC3248W535C/doc/` (non versionnée)
-
-**Prérequis** :
-- ESP32 Arduino Core **v3.0.2** obligatoire
-- Pour la lecture vidéo MJPEG : PSRAM à 120MHz (voir doc vendeur)
-
-**⚠️ Framework** : Cette carte utilise **PlatformIO avec ESP-IDF** (pas Arduino).
-- Arduino_GFX ne fonctionne pas correctement avec l'interface QSPI de cet écran (seul fillScreen marche, pas drawPixel/text)
-- Le projet de base est cloné depuis [NorthernMan54/JC3248W535EN](https://github.com/NorthernMan54/JC3248W535EN)
+**Framework** : PlatformIO avec pioarduino (Arduino sur ESP-IDF 5.1).
 
 **Compilation/Upload** :
 ```bash
-cd sketches/JC3248W535C/JC3248W535EN
+cd sketches/JC3248W535C/<projet>
 pio run                              # Compiler
-pio run -t upload -p /dev/ttyACM0    # Uploader
-pio device monitor -p /dev/ttyACM0   # Monitor série
+pio run -t upload                    # Uploader
+pio device monitor                   # Monitor série
 ```
 
-**Bibliothèques utilisées** :
+**Bibliothèques** :
 - LVGL 8.4 pour l'interface graphique
-- esp_lcd (ESP-IDF) pour le driver écran
-- Drivers custom: esp_lcd_axs15231b, esp_bsp
+- Drivers intégrés : esp_lcd_axs15231b, esp_bsp, esp_lcd_touch
 
-**Problème connu** : Fines barres verticales visibles sur l'écran (présentes aussi dans la démo originale).
-Probablement une limitation du driver QSPI ou du panneau. Réduire la fréquence QSPI (40→20 MHz) n'a pas aidé.
-
-**Modifications apportées** :
-- `partitions.csv` : Table de partition personnalisée avec app de 3MB (nécessaire pour WiFi+LVGL)
-- `platformio.ini` : Ajout de `board_build.partitions = partitions.csv`
-
-**Projets disponibles** :
-- `HelloWorld/` - Test basique de l'afficheur (en cours)
-- `JC3248W535EN/` - WiFi Scanner avec interface LVGL (scan auto toutes les 10s, bouton SCAN, liste colorée par signal)
+**Sketches disponibles** :
+- `TouchTest/` - Test du tactile avec affichage des coordonnées en temps réel
