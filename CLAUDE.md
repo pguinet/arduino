@@ -163,3 +163,4 @@ pio device monitor                   # Monitor série
 - `System_Monitor/` - Dashboard système avec jauges RAM, PSRAM, uptime
 - `WiFi_Scanner/` - Scanner WiFi avec liste tactile et signal coloré
 - `Bus_Tracker/` - Suivi des bus via API PRIM Île-de-France Mobilités
+- `SD_Browser/` - Explorateur de carte SD avec infos techniques
