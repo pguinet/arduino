@@ -162,3 +162,4 @@ pio device monitor                   # Monitor série
 - `TouchTest/` - Test du tactile avec affichage des coordonnées en temps réel
 - `System_Monitor/` - Dashboard système avec jauges RAM, PSRAM, uptime
 - `WiFi_Scanner/` - Scanner WiFi avec liste tactile et signal coloré
+- `Bus_Tracker/` - Suivi des bus via API PRIM Île-de-France Mobilités
