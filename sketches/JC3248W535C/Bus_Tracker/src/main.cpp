@@ -92,12 +92,16 @@ struct StopConfig {
 };
 
 // Liste des arrêts configurés
+#define STOP_FOCH 0
+#define STOP_EGLISE 1
 static StopConfig stops[MAX_STOPS] = {
-    {"413248", "Marechal Foch"},
-    {"", ""},  // Slot libre
+    {"413248", "Foch"},
+    {"14305", "Eglise"},
     {"", ""}   // Slot libre
 };
-static int currentStop = 0;
+static int currentStop = STOP_FOCH;
+static unsigned long stopSwitchTime = 0;
+#define AUTO_RETURN_DELAY 120000  // 2 minutes
 
 // Departure data
 struct Departure {
@@ -118,11 +122,12 @@ static bool fetching = false;
 static bool manualRefreshRequested = false;
 
 // UI elements
-static lv_obj_t *label_title;
 static lv_obj_t *label_stop;
 static lv_obj_t *label_status;
 static lv_obj_t *label_update_time;
 static lv_obj_t *btn_refresh;
+static lv_obj_t *btn_foch;
+static lv_obj_t *btn_eglise;
 static lv_obj_t *spinner;
 static lv_obj_t *cont_departures;
 static lv_obj_t *labels_time[MAX_DEPARTURES];
@@ -336,12 +341,12 @@ static void updateUI()
             } else if (departures[i].minutesLeft == 0) {
                 strcpy(timeStr, "Imminent");
                 color = lv_color_hex(COLOR_IMMINENT);
-            } else if (departures[i].minutesLeft < 3) {
+            } else if (departures[i].minutesLeft <= 6) {
                 snprintf(timeStr, sizeof(timeStr), "%d min", departures[i].minutesLeft);
-                color = lv_color_hex(COLOR_IMMINENT);
-            } else if (departures[i].minutesLeft < 10) {
+                color = lv_color_hex(COLOR_IMMINENT);  // Rouge <= 6 min
+            } else if (departures[i].minutesLeft <= 10) {
                 snprintf(timeStr, sizeof(timeStr), "%d min", departures[i].minutesLeft);
-                color = lv_color_hex(COLOR_SOON);
+                color = lv_color_hex(COLOR_SOON);      // Orange <= 10 min
             } else if (departures[i].minutesLeft < 60) {
                 snprintf(timeStr, sizeof(timeStr), "%d min", departures[i].minutesLeft);
                 color = lv_color_hex(COLOR_NORMAL);
@@ -368,12 +373,48 @@ static void updateUI()
     bsp_display_unlock();
 }
 
+// Forward declaration
+static void updateStopButtons();
+
 // Button callbacks - just set flag, fetch will happen in loop()
 static void btn_refresh_cb(lv_event_t *e)
 {
     if (!fetching) {
         manualRefreshRequested = true;
     }
+}
+
+static void btn_foch_cb(lv_event_t *e)
+{
+    if (currentStop != STOP_FOCH && !fetching) {
+        currentStop = STOP_FOCH;
+        stopSwitchTime = 0;  // Pas de retour auto pour Foch
+        manualRefreshRequested = true;
+        updateStopButtons();
+    }
+}
+
+static void btn_eglise_cb(lv_event_t *e)
+{
+    if (currentStop != STOP_EGLISE && !fetching) {
+        currentStop = STOP_EGLISE;
+        stopSwitchTime = millis();  // Démarrer timer retour auto
+        manualRefreshRequested = true;
+        updateStopButtons();
+    }
+}
+
+static void updateStopButtons()
+{
+    bsp_display_lock(0);
+    if (currentStop == STOP_FOCH) {
+        lv_obj_set_style_bg_color(btn_foch, lv_color_hex(COLOR_ACCENT), 0);
+        lv_obj_set_style_bg_color(btn_eglise, lv_color_hex(COLOR_CARD), 0);
+    } else {
+        lv_obj_set_style_bg_color(btn_foch, lv_color_hex(COLOR_CARD), 0);
+        lv_obj_set_style_bg_color(btn_eglise, lv_color_hex(COLOR_ACCENT), 0);
+    }
+    bsp_display_unlock();
 }
 
 // Create UI
@@ -393,22 +434,41 @@ static void createUI()
     lv_obj_set_style_bg_opa(title_bar, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_all(title_bar, 10, 0);
 
-    label_title = lv_label_create(title_bar);
-    lv_label_set_text(label_title, LV_SYMBOL_HOME " Bus Tracker");
-    lv_obj_set_style_text_color(label_title, lv_color_hex(COLOR_ACCENT), 0);
-    lv_obj_set_style_text_font(label_title, &lv_font_montserrat_22, 0);
-    lv_obj_align(label_title, LV_ALIGN_LEFT_MID, 0, 0);
+    // Stop buttons (Foch / Eglise)
+    btn_foch = lv_btn_create(title_bar);
+    lv_obj_set_size(btn_foch, 100, 35);
+    lv_obj_align(btn_foch, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_bg_color(btn_foch, lv_color_hex(COLOR_ACCENT), 0);
+    lv_obj_add_event_cb(btn_foch, btn_foch_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *lbl_foch = lv_label_create(btn_foch);
+    lv_label_set_text(lbl_foch, "Foch");
+    lv_obj_set_style_text_color(lbl_foch, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_text_font(lbl_foch, &lv_font_montserrat_16, 0);
+    lv_obj_center(lbl_foch);
+
+    btn_eglise = lv_btn_create(title_bar);
+    lv_obj_set_size(btn_eglise, 100, 35);
+    lv_obj_align(btn_eglise, LV_ALIGN_LEFT_MID, 110, 0);
+    lv_obj_set_style_bg_color(btn_eglise, lv_color_hex(COLOR_CARD), 0);
+    lv_obj_add_event_cb(btn_eglise, btn_eglise_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *lbl_eglise = lv_label_create(btn_eglise);
+    lv_label_set_text(lbl_eglise, "Eglise");
+    lv_obj_set_style_text_color(lbl_eglise, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_text_font(lbl_eglise, &lv_font_montserrat_16, 0);
+    lv_obj_center(lbl_eglise);
 
     // Refresh button
     btn_refresh = lv_btn_create(title_bar);
-    lv_obj_set_size(btn_refresh, 90, 35);
+    lv_obj_set_size(btn_refresh, 80, 35);
     lv_obj_align(btn_refresh, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_set_style_bg_color(btn_refresh, lv_color_hex(COLOR_ACCENT), 0);
+    lv_obj_set_style_bg_color(btn_refresh, lv_color_hex(0x444444), 0);
     lv_obj_add_event_cb(btn_refresh, btn_refresh_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *btn_label = lv_label_create(btn_refresh);
-    lv_label_set_text(btn_label, LV_SYMBOL_REFRESH " MAJ");
-    lv_obj_set_style_text_color(btn_label, lv_color_hex(0x000000), 0);
+    lv_label_set_text(btn_label, LV_SYMBOL_REFRESH);
+    lv_obj_set_style_text_color(btn_label, lv_color_hex(COLOR_TEXT), 0);
     lv_obj_center(btn_label);
 
     // Spinner (hidden by default)
@@ -595,6 +655,16 @@ void loop()
 
     if (nightMode != wasNightMode) {
         updateUI();
+    }
+
+    // Auto return to Foch after 2 minutes
+    if (currentStop != STOP_FOCH && stopSwitchTime > 0) {
+        if (millis() - stopSwitchTime >= AUTO_RETURN_DELAY) {
+            currentStop = STOP_FOCH;
+            stopSwitchTime = 0;
+            updateStopButtons();
+            manualRefreshRequested = true;
+        }
     }
 
     // Manual refresh requested (from button)
