@@ -1,0 +1,4 @@
+Standalone Case JC3248W535C by so99hero on Thingiverse: https://www.thingiverse.com/thing:7127557
+
+Summary:
+Case for the ESP32S3 3.5" touchscreen module JC3248W535C. It provides space a 2000 mAh Li-Po battery pack (max. 65x40x10 mm) and two 20x4 mm neodymium magnets. The display module is secured with four M2x4 mm threaded screws. It offers straight and right-angled access to the module's USB-C port. Button function is integrated into the case (do not use internal support during printing; only use support from the print bed if necessary).IMPORTANT: Before installing the display, the cover plate on the back of the display must be removed!
