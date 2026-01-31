@@ -41,6 +41,10 @@
 #define NIGHT_START_HOUR    20
 #define NIGHT_END_HOUR      6
 
+// Screen off hours (backlight off)
+#define SCREEN_OFF_START    22
+#define SCREEN_OFF_END      5
+
 // Config
 #define MAX_DEPARTURES 5
 #define MAX_STOPS 3
@@ -118,6 +122,7 @@ static unsigned long lastUpdate = 0;
 static char lastUpdateTime[10] = "--:--";
 static char errorMsg[50] = "";
 static bool nightMode = false;
+static bool screenOff = false;
 static bool fetching = false;
 static bool manualRefreshRequested = false;
 
@@ -163,6 +168,15 @@ static bool isNightMode()
     struct tm* ti = localtime(&now);
     int hour = ti->tm_hour;
     return (hour >= NIGHT_START_HOUR || hour < NIGHT_END_HOUR);
+}
+
+// Check if screen should be off (22h-5h)
+static bool isScreenOffTime()
+{
+    time_t now = time(nullptr);
+    struct tm* ti = localtime(&now);
+    int hour = ti->tm_hour;
+    return (hour >= SCREEN_OFF_START || hour < SCREEN_OFF_END);
 }
 
 // Fetch departures from API
@@ -649,6 +663,18 @@ void setup()
 
 void loop()
 {
+    // Check screen off time (22h-5h)
+    bool wasScreenOff = screenOff;
+    screenOff = isScreenOffTime();
+
+    if (screenOff != wasScreenOff) {
+        if (screenOff) {
+            bsp_display_backlight_off();
+        } else {
+            bsp_display_backlight_on();
+        }
+    }
+
     // Check night mode
     bool wasNightMode = nightMode;
     nightMode = isNightMode();
