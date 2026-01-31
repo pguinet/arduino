@@ -16,8 +16,10 @@
  */
 
 #include <Arduino.h>
+#include <FS.h>
 #include <SD_MMC.h>
 #include <lvgl.h>
+#include <JPEGDEC.h>
 #include "display.h"
 #include "esp_bsp.h"
 #include "lv_port.h"
@@ -46,11 +48,14 @@ static lv_obj_t *btn_back;
 static lv_obj_t *btn_info;
 static lv_obj_t *btn_refresh;
 static lv_obj_t *list_files;
+static lv_obj_t *img_overlay = nullptr;
+static lv_obj_t *img_view = nullptr;
 
 // State
 static String currentPath = "/";
 static bool sdCardOk = false;
 static bool showingInfo = false;
+static bool showingImage = false;
 
 // Format size to human readable
 static String formatSize(uint64_t bytes)
@@ -74,6 +79,184 @@ static const char* getCardTypeString(sdcard_type_t type)
         case CARD_SD: return "SD";
         case CARD_SDHC: return "SDHC";
         default: return "Inconnu";
+    }
+}
+
+// Check if file is an image (JPEG only for now)
+static bool isImageFile(const char* name)
+{
+    String filename = String(name);
+    filename.toLowerCase();
+    return filename.endsWith(".jpg") || filename.endsWith(".jpeg");
+}
+
+// JPEG decoder instance and canvas buffer
+static JPEGDEC jpeg;
+static lv_obj_t *img_canvas = nullptr;
+static lv_color_t *canvas_buf = nullptr;
+static int canvas_width = 0;
+static int canvas_height = 0;
+static int img_offset_x = 0;
+static int img_offset_y = 0;
+
+// Close image overlay callback
+static void close_image_cb(lv_event_t *e)
+{
+    if (img_overlay) {
+        lv_obj_del(img_overlay);
+        img_overlay = nullptr;
+        img_view = nullptr;
+        img_canvas = nullptr;
+        showingImage = false;
+
+        // Free canvas buffer
+        if (canvas_buf) {
+            heap_caps_free(canvas_buf);
+            canvas_buf = nullptr;
+        }
+    }
+}
+
+// JPEG draw callback - called for each decoded MCU block
+static int jpegDrawCallback(JPEGDRAW *pDraw)
+{
+    if (!canvas_buf) return 0;
+
+    // Draw pixels to canvas buffer
+    uint16_t *src = pDraw->pPixels;
+    for (int y = 0; y < pDraw->iHeight; y++) {
+        int destY = pDraw->y + y + img_offset_y;
+        if (destY < 0 || destY >= canvas_height) continue;
+
+        for (int x = 0; x < pDraw->iWidth; x++) {
+            int destX = pDraw->x + x + img_offset_x;
+            if (destX < 0 || destX >= canvas_width) continue;
+
+            uint16_t pixel = src[y * pDraw->iWidth + x];
+            // Convert RGB565 to lv_color
+            canvas_buf[destY * canvas_width + destX] = lv_color_make(
+                (pixel >> 8) & 0xF8,  // R
+                (pixel >> 3) & 0xFC,  // G
+                (pixel << 3) & 0xF8   // B
+            );
+        }
+    }
+    return 1;
+}
+
+// Show image in fullscreen overlay
+static void showImage(const char* filepath)
+{
+    Serial.printf("Opening image: %s\n", filepath);
+
+    // Open and read file to PSRAM
+    File f = SD_MMC.open(filepath);
+    if (!f) {
+        Serial.printf("File not found: %s\n", filepath);
+        return;
+    }
+    size_t fileSize = f.size();
+    Serial.printf("File size: %u bytes\n", fileSize);
+
+    // Limit file size (2MB max)
+    if (fileSize > 2 * 1024 * 1024) {
+        Serial.println("File too large");
+        f.close();
+        return;
+    }
+
+    // Allocate buffer for JPEG data in PSRAM
+    uint8_t *jpegBuf = (uint8_t *)heap_caps_malloc(fileSize, MALLOC_CAP_SPIRAM);
+    if (!jpegBuf) {
+        Serial.println("Failed to allocate JPEG buffer");
+        f.close();
+        return;
+    }
+
+    // Read file
+    size_t bytesRead = f.read(jpegBuf, fileSize);
+    f.close();
+    if (bytesRead != fileSize) {
+        Serial.println("Failed to read file");
+        heap_caps_free(jpegBuf);
+        return;
+    }
+
+    // Open JPEG decoder with RAM buffer
+    if (!jpeg.openRAM(jpegBuf, fileSize, jpegDrawCallback)) {
+        Serial.println("Failed to open JPEG");
+        heap_caps_free(jpegBuf);
+        return;
+    }
+
+    int imgW = jpeg.getWidth();
+    int imgH = jpeg.getHeight();
+    Serial.printf("JPEG: %dx%d\n", imgW, imgH);
+
+    // Calculate display size (fit to screen 480x320)
+    canvas_width = 480;
+    canvas_height = 320;
+
+    // Center image
+    img_offset_x = (canvas_width - imgW) / 2;
+    img_offset_y = (canvas_height - imgH) / 2;
+    if (img_offset_x < 0) img_offset_x = 0;
+    if (img_offset_y < 0) img_offset_y = 0;
+
+    // Allocate canvas buffer in PSRAM
+    canvas_buf = (lv_color_t *)heap_caps_malloc(canvas_width * canvas_height * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
+    if (!canvas_buf) {
+        Serial.println("Failed to allocate canvas buffer");
+        jpeg.close();
+        heap_caps_free(jpegBuf);
+        return;
+    }
+
+    // Fill with black
+    for (int i = 0; i < canvas_width * canvas_height; i++) {
+        canvas_buf[i] = lv_color_black();
+    }
+
+    // Decode JPEG
+    Serial.println("Decoding JPEG...");
+    jpeg.decode(0, 0, 0);  // No scaling
+    jpeg.close();
+    heap_caps_free(jpegBuf);
+    Serial.println("Decode done");
+
+    bsp_display_lock(0);
+
+    // Create fullscreen overlay
+    img_overlay = lv_obj_create(lv_scr_act());
+    lv_obj_remove_style_all(img_overlay);
+    lv_obj_set_size(img_overlay, 480, 320);
+    lv_obj_align(img_overlay, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(img_overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(img_overlay, LV_OPA_COVER, 0);
+    lv_obj_add_event_cb(img_overlay, close_image_cb, LV_EVENT_CLICKED, NULL);
+
+    // Create canvas with decoded image
+    img_canvas = lv_canvas_create(img_overlay);
+    lv_canvas_set_buffer(img_canvas, canvas_buf, canvas_width, canvas_height, LV_IMG_CF_TRUE_COLOR);
+    lv_obj_center(img_canvas);
+
+    // Add close hint label
+    lv_obj_t *hint = lv_label_create(img_overlay);
+    lv_label_set_text(hint, "Tap pour fermer");
+    lv_obj_set_style_text_color(hint, lv_color_hex(0x888888), 0);
+    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -10);
+
+    showingImage = true;
+
+    bsp_display_unlock();
+}
+
+// Image click callback
+static void image_click_cb(lv_event_t *e)
+{
+    const char *filepath = (const char *)lv_event_get_user_data(e);
+    if (filepath) {
+        showImage(filepath);
     }
 }
 
@@ -228,13 +411,24 @@ static void updateFileList()
                 lv_obj_set_style_text_color(lbl, lv_color_hex(COLOR_TEXT), 0);
             }
 
-            // Add click handler for directories only
+            // Add click handler for directories and images
             if (isDir) {
                 // Store name in button's user data
                 static char storedNames[50][64];
                 strncpy(storedNames[count], name, 63);
                 storedNames[count][63] = '\0';
                 lv_obj_add_event_cb(btn, file_click_cb, LV_EVENT_CLICKED, storedNames[count]);
+            } else if (isImageFile(name)) {
+                // Store full path for images
+                static char storedPaths[50][128];
+                String fullPath = currentPath;
+                if (!fullPath.endsWith("/")) fullPath += "/";
+                fullPath += name;
+                strncpy(storedPaths[count], fullPath.c_str(), 127);
+                storedPaths[count][127] = '\0';
+                lv_obj_add_event_cb(btn, image_click_cb, LV_EVENT_CLICKED, storedPaths[count]);
+                // Highlight images
+                lv_obj_set_style_text_color(img, lv_color_hex(COLOR_ACCENT), 0);
             }
 
             count++;
