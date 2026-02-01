@@ -23,7 +23,7 @@
 #include "credentials.h"
 #include "prim_config.h"
 
-#define LVGL_PORT_ROTATION_DEGREE (90)
+#define LVGL_PORT_ROTATION_DEGREE (270)
 
 // Colors
 #define COLOR_BG        0x1a1a2e
@@ -36,8 +36,8 @@
 #define COLOR_DIMMED    0x666666
 
 // Update intervals (ms)
-#define INTERVAL_RUSH_HOUR  300000  // 5 min heures de pointe
-#define INTERVAL_NORMAL     600000  // 10 min heures creuses
+#define INTERVAL_RUSH_HOUR  30000   // 30 sec heures de pointe
+#define INTERVAL_NORMAL     120000  // 2 min heures creuses
 #define NIGHT_START_HOUR    20
 #define NIGHT_END_HOUR      6
 

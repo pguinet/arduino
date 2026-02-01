@@ -24,7 +24,7 @@
 #include "esp_bsp.h"
 #include "lv_port.h"
 
-#define LVGL_PORT_ROTATION_DEGREE (90)
+#define LVGL_PORT_ROTATION_DEGREE (270)
 
 // SD MMC pins
 #define SD_MMC_CLK  12

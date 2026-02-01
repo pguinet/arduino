@@ -17,7 +17,7 @@
 #include "esp_bsp.h"
 #include "lv_port.h"
 
-#define LVGL_PORT_ROTATION_DEGREE (90)
+#define LVGL_PORT_ROTATION_DEGREE (270)
 
 // Colors
 #define COLOR_BG        0x1a1a2e

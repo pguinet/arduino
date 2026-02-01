@@ -16,7 +16,7 @@
 #include "esp_bsp.h"
 #include "lv_port.h"
 
-#define LVGL_PORT_ROTATION_DEGREE (90)
+#define LVGL_PORT_ROTATION_DEGREE (270)
 
 // UI elements
 static lv_obj_t *label_title;
