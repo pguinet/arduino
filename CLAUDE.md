@@ -57,6 +57,7 @@ Chaque sketch doit avoir un en-tête standardisé :
 
 Les sketches sont organisés par type de carte dans `sketches/` :
 - `CircuitPlayground-Express/` - Carte Adafruit avec LEDs, capteurs intégrés
+- `ESP32-2432S028/` - ESP32 avec écran tactile 2.8" TFT 320×240 (Cheap Yellow Display)
 - `HW-364B/` - ESP8266 avec écran OLED bicolore (jaune/bleu) intégré
 - `JC3248W535C/` - ESP32-S3 avec écran tactile 3.5" IPS 320×480
 - `XIAO-ESP32-C6/` - Carte Seeed Studio avec WiFi
@@ -76,6 +77,7 @@ ln -s /chemin/absolu/vers/sketches/common/credentials.h credentials.h
 | Carte | FQBN |
 |-------|------|
 | Circuit Playground Express | `adafruit:samd:adafruit_circuitplayground_m0` |
+| ESP32-2432S028 (Cheap Yellow Display) | `esp32:esp32:esp32` |
 | HW-364B (ESP8266 + OLED) | `esp8266:esp8266:nodemcuv2` |
 | JC3248W535C (ESP32-S3 + LCD tactile) | `esp32:esp32:esp32s3` |
 | XIAO ESP32-C6 | `esp32:esp32:XIAO_ESP32C6` |
@@ -164,3 +166,71 @@ pio device monitor                   # Monitor série
 - `WiFi_Scanner/` - Scanner WiFi avec liste tactile et signal coloré
 - `Bus_Tracker/` - Suivi des bus via API PRIM Île-de-France Mobilités
 - `SD_Browser/` - Explorateur de carte SD avec infos techniques
+
+## ESP32-2432S028
+
+Carte ESP32 avec écran tactile TFT 2.8" (320×240), aussi connue sous le nom "Cheap Yellow Display" (CYD).
+
+**Documentation** :
+- [Random Nerd Tutorials - CYD Pinout](https://randomnerdtutorials.com/esp32-cheap-yellow-display-cyd-pinout-esp32-2432s028r/)
+- [GitHub witnessmenow/ESP32-Cheap-Yellow-Display](https://github.com/witnessmenow/ESP32-Cheap-Yellow-Display)
+
+**MCU** : ESP32-WROOM-32 (dual-core Xtensa 240MHz, WiFi, Bluetooth 4.2, Flash 4MB)
+
+**Écran LCD** (contrôleur ILI9341, SPI HSPI) :
+| Signal | GPIO |
+|--------|------|
+| MOSI | 13 |
+| MISO | 12 |
+| SCLK | 14 |
+| CS | 15 |
+| DC | 2 |
+| Backlight | 21 |
+
+**Tactile** (contrôleur XPT2046, SPI VSPI) :
+| Signal | GPIO |
+|--------|------|
+| CLK | 25 |
+| MOSI | 32 |
+| MISO | 39 |
+| CS | 33 |
+| IRQ | 36 |
+
+**Carte SD** (SPI) :
+| Signal | GPIO |
+|--------|------|
+| SCK | 18 |
+| MOSI | 23 |
+| MISO | 19 |
+| CS | 5 |
+
+**LED RGB** (active LOW) : R=GPIO4, G=GPIO16, B=GPIO17
+
+**Autres** :
+- LDR (capteur lumière) : GPIO34
+- Speaker : GPIO26
+- Bouton BOOT : GPIO0
+
+**Connecteurs extension** :
+- P3 : GPIO35 (input only), GPIO22, GPIO21, GND
+- CN1 : GPIO22, GPIO27, 3V3, GND
+
+**Bibliothèques recommandées** :
+- TFT_eSPI (écran ILI9341)
+- XPT2046_Touchscreen (tactile)
+
+**Configuration TFT_eSPI** : Le fichier `User_Setup.h` doit être copié dans la bibliothèque :
+```bash
+cp sketches/ESP32-2432S028/User_Setup.h ~/Arduino/libraries/TFT_eSPI/User_Setup.h
+```
+
+**Compilation** :
+```bash
+./bin/arduino-cli compile --fqbn esp32:esp32:esp32 sketches/ESP32-2432S028/<projet>/<projet>.ino
+./bin/arduino-cli upload --fqbn esp32:esp32:esp32 --port /dev/ttyUSB0 sketches/ESP32-2432S028/<projet>/<projet>.ino
+```
+
+**Sketches disponibles** :
+- `Display_Test/` - Test de l'écran TFT avec formes, couleurs et texte
+- `Touch_Test/` - Test du tactile avec dessin et palette de couleurs
+- `RGB_LED_Test/` - Test de la LED RGB avec défilement et effet arc-en-ciel
