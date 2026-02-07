@@ -13,3 +13,6 @@ Adafruit_CircuitPlayground
 # Écran TFT (ESP32-2432S028 / Cheap Yellow Display)
 TFT_eSPI
 XPT2046_Touchscreen
+
+# MQTT
+PubSubClient

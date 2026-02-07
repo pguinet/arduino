@@ -65,12 +65,21 @@ Les sketches sont organisés par type de carte dans `sketches/` :
 ## Fichiers communs
 
 Le dossier `sketches/common/` contient les fichiers partagés :
-- `credentials.h` - Identifiants WiFi (lié par symlink dans les projets)
+- `credentials.h` - Identifiants WiFi et MQTT (lié par symlink dans les projets)
+- `credentials.h.example` - Template versionné avec placeholders
 
 **Important** : Les symlinks doivent utiliser des chemins absolus pour fonctionner avec le compilateur Arduino :
 ```bash
 ln -s /chemin/absolu/vers/sketches/common/credentials.h credentials.h
 ```
+
+## Sécurité - Credentials
+
+**INTERDIT** : Ne JAMAIS écrire de mots de passe, clés API ou secrets dans le code ou dans les fichiers versionnés.
+
+- Les credentials vont dans `credentials.h` (ignoré par git)
+- Mettre à jour `credentials.h.example` avec des placeholders si on ajoute de nouveaux paramètres
+- Vérifier que tout nouveau fichier sensible est dans `.gitignore`
 
 ## Cartes et FQBN
 
@@ -99,6 +108,7 @@ Carte ESP8266 avec écran OLED 0.96" intégré (SSD1306).
 - `NTP_Clock` - Horloge NTP + configuration web (timezone, format)
 - `Mini_Dashboard` - Dashboard interactif web ↔ OLED (sliders, toggles, messages)
 - `Bitcoin_Ticker` - Cours du Bitcoin en USD via API CoinGecko (maj toutes les 60s)
+- `Zigbee_Monitor` - Affichage des capteurs Zigbee via MQTT (Zigbee2MQTT)
 
 ## JC3248W535C
 
