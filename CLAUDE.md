@@ -244,3 +244,4 @@ cp sketches/ESP32-2432S028/User_Setup.h ~/Arduino/libraries/TFT_eSPI/User_Setup.
 - `Display_Test/` - Test de l'écran TFT avec formes, couleurs et texte
 - `Touch_Test/` - Test du tactile avec dessin et palette de couleurs
 - `RGB_LED_Test/` - Test de la LED RGB avec défilement et effet arc-en-ciel
+- `Crypto_Tracker/` - Cours des cryptos avec graphique 7j, navigation tactile, rotation auto
