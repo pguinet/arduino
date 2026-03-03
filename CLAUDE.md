@@ -60,6 +60,7 @@ Les sketches sont organisés par type de carte dans `sketches/` :
 - `ESP32-2432S028/` - ESP32 avec écran tactile 2.8" TFT 320×240 (Cheap Yellow Display)
 - `HW-364B/` - ESP8266 avec écran OLED bicolore (jaune/bleu) intégré
 - `JC3248W535C/` - ESP32-S3 avec écran tactile 3.5" IPS 320×480
+- `NodeMCU/` - NodeMCU ESP8266 (ESP-12E)
 - `XIAO-ESP32-C6/` - Carte Seeed Studio avec WiFi
 
 ## Fichiers communs
@@ -88,8 +89,29 @@ ln -s /chemin/absolu/vers/sketches/common/credentials.h credentials.h
 | Circuit Playground Express | `adafruit:samd:adafruit_circuitplayground_m0` |
 | ESP32-2432S028 (Cheap Yellow Display) | `esp32:esp32:esp32` |
 | HW-364B (ESP8266 + OLED) | `esp8266:esp8266:nodemcuv2` |
+| NodeMCU (ESP8266) | `esp8266:esp8266:nodemcuv2` |
 | JC3248W535C (ESP32-S3 + LCD tactile) | `esp32:esp32:esp32s3` |
 | XIAO ESP32-C6 | `esp32:esp32:XIAO_ESP32C6` |
+
+## NodeMCU
+
+Carte NodeMCU 1.0 (ESP-12E Module) basée sur ESP8266.
+
+**MCU** : ESP8266EX (Xtensa LX106 80/160MHz, WiFi, Flash 4MB)
+
+**Pins utiles** :
+- A0 : entrée analogique (0-1V, diviseur interne pour 0-3.3V)
+- D1 (GPIO5), D2 (GPIO4) : I2C par défaut
+- D5-D8 : SPI
+
+**Compilation** :
+```bash
+./bin/arduino-cli compile --fqbn esp8266:esp8266:nodemcuv2 sketches/NodeMCU/<projet>/<projet>.ino
+./bin/arduino-cli upload --fqbn esp8266:esp8266:nodemcuv2 --port /dev/ttyUSB0 sketches/NodeMCU/<projet>/<projet>.ino
+```
+
+**Sketches disponibles** :
+- `Servo_Potentiometer/` - Contrôle d'un servo-moteur avec un potentiomètre
 
 ## HW-364B
 
