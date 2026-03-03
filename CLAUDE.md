@@ -56,7 +56,7 @@ Chaque sketch doit avoir un en-tête standardisé :
 ## Structure du projet
 
 Les sketches sont organisés par type de carte dans `sketches/` :
-- `CircuitPlayground-Express/` - Carte Adafruit avec LEDs, capteurs intégrés
+- `CircuitPlayground-Express/` - Carte Adafruit avec LEDs, capteurs, pads capacitifs
 - `ESP32-2432S028/` - ESP32 avec écran tactile 2.8" TFT 320×240 (Cheap Yellow Display)
 - `HW-364B/` - ESP8266 avec écran OLED bicolore (jaune/bleu) intégré
 - `JC3248W535C/` - ESP32-S3 avec écran tactile 3.5" IPS 320×480
@@ -92,6 +92,35 @@ ln -s /chemin/absolu/vers/sketches/common/credentials.h credentials.h
 | NodeMCU (ESP8266) | `esp8266:esp8266:nodemcuv2` |
 | JC3248W535C (ESP32-S3 + LCD tactile) | `esp32:esp32:esp32s3` |
 | XIAO ESP32-C6 | `esp32:esp32:XIAO_ESP32C6` |
+
+## Circuit Playground Express
+
+Carte Adafruit avec 10 NeoPixels, accéléromètre, micro, capteur de température, speaker et pads capacitifs.
+
+**Pads capacitifs** : A1 à A7 uniquement (A0 = speaker, pas capacitif). Seuil au repos ~200-250, utiliser un calibrage automatique.
+
+**Mapping pads → LEDs** (USB en haut) :
+| Pad | LEDs |
+|-----|------|
+| A7 | 3, 4 |
+| A1 | 6, 5 |
+| A3 | 8, 9 |
+| A4 | 0, 1 |
+
+**Compilation** :
+```bash
+./bin/arduino-cli compile --fqbn adafruit:samd:adafruit_circuitplayground_m0 sketches/CircuitPlayground-Express/<projet>/<projet>.ino
+./bin/arduino-cli upload --fqbn adafruit:samd:adafruit_circuitplayground_m0 --port /dev/ttyACM0 sketches/CircuitPlayground-Express/<projet>/<projet>.ino
+```
+
+**Sketches disponibles** :
+- `AccelDemo/` - Démo de l'accéléromètre
+- `LedDemo/` - Animation arc-en-ciel sur les NeoPixels
+- `MicroDemo/` - VU-mètre basique avec le microphone
+- `TempDemo/` - Démo du capteur de température
+- `Sound_VUMeter/` - VU-mètre avancé avec 3 modes d'affichage et peak hold
+- `Simon_Game/` - Jeu de mémoire Simon avec pads capacitifs et sons
+- `Touch_Test/` - Test des pads capacitifs (valeurs brutes sur série)
 
 ## NodeMCU
 
