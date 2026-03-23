@@ -290,6 +290,7 @@ pio device monitor                   # Monitor série
 
 **Sketches disponibles** :
 - `System_Dashboard/` - Dashboard système avec jauges RAM/PSRAM, WiFi, contrôle 3 relais tactile
+- `HA_Wall_Panel/` - Panneau mural Home Assistant : lumières + 3 relais via MQTT Discovery
 
 ## ESP32-2432S028
 
