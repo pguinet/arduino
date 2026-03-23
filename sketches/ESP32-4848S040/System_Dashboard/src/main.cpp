@@ -20,6 +20,7 @@
 #include <esp_system.h>
 #include <esp_chip_info.h>
 #include "credentials.h"
+#include "esp32s3/rom/cache.h"
 
 /* ── Display configuration ─────────────────────────────────── */
 
@@ -40,7 +41,11 @@ Arduino_ESP32RGBPanel *rgbpanel = new Arduino_ESP32RGBPanel(
     4 /* B0 */, 5 /* B1 */, 6 /* B2 */, 7 /* B3 */, 15 /* B4 */,
     1, 10, 8, 50,   // hsync: polarity, front_porch, pulse_width, back_porch
     1, 10, 8, 20,   // vsync: polarity, front_porch, pulse_width, back_porch
-    1, 12000000);    // pclk: active_neg, speed
+    1, 12000000,     // pclk: active_neg, speed
+    false,           // useBigEndian
+    0,               // de_idle_high
+    0,               // pclk_idle_high
+    480 * 20);       // bounce_buffer_size_px
 
 Arduino_RGB_Display *gfx = new Arduino_RGB_Display(
     SCREEN_W, SCREEN_H, rgbpanel, 0 /* rotation */, true /* auto_flush */,
@@ -103,12 +108,18 @@ static const unsigned long WIFI_CHECK_INTERVAL = 10000;
 
 static void disp_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
                            lv_color_t *color_p) {
-    uint32_t w = (area->x2 - area->x1 + 1);
-    uint32_t h = (area->y2 - area->y1 + 1);
-
-    gfx->draw16bitRGBBitmap(area->x1, area->y1,
-                             (uint16_t *)&color_p->full, w, h);
-
+    uint16_t *fb = (uint16_t *)gfx->getFramebuffer();
+    if (fb) {
+        int32_t w = area->x2 - area->x1 + 1;
+        uint16_t *src = (uint16_t *)color_p;
+        for (int32_t y = area->y1; y <= area->y2; y++) {
+            memcpy(&fb[y * SCREEN_W + area->x1], src, w * sizeof(uint16_t));
+            src += w;
+        }
+        uint32_t flush_start = (uint32_t)&fb[area->y1 * SCREEN_W];
+        uint32_t flush_size = (area->y2 - area->y1 + 1) * SCREEN_W * sizeof(uint16_t);
+        Cache_WriteBack_Addr(flush_start, flush_size);
+    }
     lv_disp_flush_ready(drv);
 }
 

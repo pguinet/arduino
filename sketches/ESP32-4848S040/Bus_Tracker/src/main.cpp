@@ -1,0 +1,866 @@
+/*
+ * Bus_Tracker - ESP32-4848S040
+ *
+ * Affiche les prochains passages de bus via l'API PRIM
+ * Ile-de-France Mobilites. Interface tactile LVGL.
+ *
+ * Board: ESP32-4848S040C_I_Y_3 (Guition 4" 480x480 IPS)
+ * FQBN: PlatformIO esp32-s3-devkitm-1
+ *
+ * @dependencies Arduino_GFX, LVGL 8.4, TAMC_GT911, ArduinoJson
+ */
+
+#include <Arduino.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <ArduinoJson.h>
+#include <time.h>
+#include <esp_task_wdt.h>
+#include <lvgl.h>
+#include <Arduino_GFX_Library.h>
+#include <Wire.h>
+#include <TAMC_GT911.h>
+#include "credentials.h"
+#include "prim_config.h"
+#include "esp32s3/rom/cache.h"
+
+/* ── Display configuration ─────────────────────────────────── */
+
+#define SCREEN_W 480
+#define SCREEN_H 480
+#define GFX_BL 38
+
+// Software SPI for ST7701S init commands
+Arduino_DataBus *bus = new Arduino_SWSPI(
+    GFX_NOT_DEFINED /* DC */, 39 /* CS */,
+    48 /* SCK */, 47 /* MOSI */, GFX_NOT_DEFINED /* MISO */);
+
+// RGB parallel panel
+Arduino_ESP32RGBPanel *rgbpanel = new Arduino_ESP32RGBPanel(
+    18 /* DE */, 17 /* VSYNC */, 16 /* HSYNC */, 21 /* PCLK */,
+    11 /* R0 */, 12 /* R1 */, 13 /* R2 */, 14 /* R3 */, 0 /* R4 */,
+    8 /* G0 */, 20 /* G1 */, 3 /* G2 */, 46 /* G3 */, 9 /* G4 */, 10 /* G5 */,
+    4 /* B0 */, 5 /* B1 */, 6 /* B2 */, 7 /* B3 */, 15 /* B4 */,
+    1, 10, 8, 50,   // hsync: polarity, front_porch, pulse_width, back_porch
+    1, 10, 8, 20,   // vsync: polarity, front_porch, pulse_width, back_porch
+    1, 12000000,     // pclk: active_neg, speed
+    false,           // useBigEndian
+    0,               // de_idle_high
+    0,               // pclk_idle_high
+    480 * 20);       // bounce_buffer_size_px (20 lines in internal SRAM)
+
+Arduino_RGB_Display *gfx = new Arduino_RGB_Display(
+    SCREEN_W, SCREEN_H, rgbpanel, 0 /* rotation */, true /* auto_flush */,
+    bus, GFX_NOT_DEFINED /* RST */,
+    st7701_type9_init_operations, sizeof(st7701_type9_init_operations));
+
+/* ── Touch configuration ───────────────────────────────────── */
+
+#define TP_SDA 19
+#define TP_SCL 45
+#define TP_INT -1
+#define TP_RST -1
+
+TAMC_GT911 touch(TP_SDA, TP_SCL, TP_INT, TP_RST, SCREEN_W, SCREEN_H);
+
+/* ── LVGL globals ──────────────────────────────────────────── */
+
+static lv_disp_draw_buf_t draw_buf;
+static lv_color_t *buf1 = NULL;
+static lv_disp_drv_t disp_drv;
+static lv_indev_drv_t indev_drv;
+
+/* ── LVGL display flush callback ───────────────────────────── */
+
+static void disp_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
+                           lv_color_t *color_p) {
+    uint16_t *fb = (uint16_t *)gfx->getFramebuffer();
+    if (fb) {
+        int32_t w = area->x2 - area->x1 + 1;
+        uint16_t *src = (uint16_t *)color_p;
+        for (int32_t y = area->y1; y <= area->y2; y++) {
+            memcpy(&fb[y * SCREEN_W + area->x1], src, w * sizeof(uint16_t));
+            src += w;
+        }
+        // Flush cache so DMA sees updated pixels
+        uint32_t flush_start = (uint32_t)&fb[area->y1 * SCREEN_W];
+        uint32_t flush_size = (area->y2 - area->y1 + 1) * SCREEN_W * sizeof(uint16_t);
+        Cache_WriteBack_Addr(flush_start, flush_size);
+    }
+    lv_disp_flush_ready(drv);
+}
+
+/* ── LVGL touch read callback ──────────────────────────────── */
+
+static void touch_read_cb(lv_indev_drv_t *drv, lv_indev_data_t *data) {
+    touch.read();
+    if (touch.isTouched) {
+        data->state = LV_INDEV_STATE_PR;
+        data->point.x = (SCREEN_W - 1) - touch.points[0].x;
+        data->point.y = (SCREEN_H - 1) - touch.points[0].y;
+    } else {
+        data->state = LV_INDEV_STATE_REL;
+    }
+}
+
+/* ── Colors ────────────────────────────────────────────────── */
+
+#define COLOR_BG        0x1a1a2e
+#define COLOR_CARD      0x16213e
+#define COLOR_TEXT      0xffffff
+#define COLOR_ACCENT    0x00ff88
+#define COLOR_IMMINENT  0xf72585
+#define COLOR_SOON      0xfca311
+#define COLOR_NORMAL    0x4cc9f0
+#define COLOR_DIMMED    0x666666
+
+/* ── Watchdog timeout (seconds) ────────────────────────────── */
+
+#define WDT_TIMEOUT_SEC     30
+
+/* ── Update intervals (ms) ─────────────────────────────────── */
+
+#define INTERVAL_RUSH_HOUR  30000   // 30 sec heures de pointe
+#define INTERVAL_NORMAL     120000  // 2 min heures creuses
+#define NIGHT_START_HOUR    23
+#define NIGHT_END_HOUR      6
+
+/* ── Screen off hours (backlight off) ──────────────────────── */
+
+#define SCREEN_OFF_START    23
+#define SCREEN_OFF_END      5
+
+/* ── Config ────────────────────────────────────────────────── */
+
+#define MAX_DEPARTURES 5
+#define MAX_STOPS 3
+
+/* ── Line code to name mapping ─────────────────────────────── */
+
+struct LineMapping {
+    const char* code;
+    const char* name;
+};
+
+static const LineMapping lineMappings[] = {
+    {"C01252", "269"},
+    {"C02462", "1517"},
+    {nullptr, nullptr}
+};
+
+static const char* getLineName(const char* lineRef)
+{
+    if (!lineRef) return "?";
+
+    const char* start = strstr(lineRef, "::");
+    if (!start) return "?";
+    start += 2;
+
+    for (int i = 0; lineMappings[i].code != nullptr; i++) {
+        if (strstr(start, lineMappings[i].code) == start) {
+            return lineMappings[i].name;
+        }
+    }
+
+    static char buf[8];
+    strncpy(buf, start, 6);
+    buf[6] = '\0';
+    char* colon = strchr(buf, ':');
+    if (colon) *colon = '\0';
+    return buf;
+}
+
+/* ── Stop configuration ────────────────────────────────────── */
+
+struct StopConfig {
+    const char* stopId;
+    const char* stopName;
+};
+
+#define STOP_FOCH 0
+#define STOP_EGLISE 1
+static StopConfig stops[MAX_STOPS] = {
+    {"413248", "Foch"},
+    {"14305", "Eglise"},
+    {"", ""}
+};
+static int currentStop = STOP_FOCH;
+static unsigned long stopSwitchTime = 0;
+#define AUTO_RETURN_DELAY 120000
+
+/* ── Departure data ────────────────────────────────────────── */
+
+struct Departure {
+    int minutesLeft;
+    char lineName[10];
+    char destination[40];
+    bool atStop;
+};
+
+static Departure departures[MAX_DEPARTURES];
+static int departureCount = 0;
+static bool dataValid = false;
+static unsigned long lastUpdate = 0;
+static char lastUpdateTime[10] = "--:--";
+static char errorMsg[50] = "";
+static bool nightMode = false;
+static bool screenOff = false;
+static bool fetching = false;
+static unsigned long fetchStartTime = 0;
+#define FETCH_TIMEOUT_MS 20000
+static bool manualRefreshRequested = false;
+static int consecutiveErrors = 0;
+
+/* ── UI elements ───────────────────────────────────────────── */
+
+static lv_obj_t *label_stop;
+static lv_obj_t *label_status;
+static lv_obj_t *label_update_time;
+static lv_obj_t *btn_refresh;
+static lv_obj_t *btn_foch;
+static lv_obj_t *btn_eglise;
+static lv_obj_t *spinner;
+static lv_obj_t *cont_departures;
+static lv_obj_t *labels_time[MAX_DEPARTURES];
+static lv_obj_t *labels_dest[MAX_DEPARTURES];
+static lv_obj_t *night_overlay;
+
+/* ── WiFi client ───────────────────────────────────────────── */
+
+static WiFiClientSecure client;
+
+/* ── Time helpers ──────────────────────────────────────────── */
+
+static unsigned long getUpdateInterval()
+{
+    time_t now = time(nullptr);
+    struct tm* ti = localtime(&now);
+    int hour = ti->tm_hour;
+    int minute = ti->tm_min;
+
+    if ((hour == 6 && minute >= 30) || (hour >= 7 && hour < 9)) {
+        return INTERVAL_RUSH_HOUR;
+    }
+    if (hour >= 16 && hour < 23) {
+        return INTERVAL_RUSH_HOUR;
+    }
+    return INTERVAL_NORMAL;
+}
+
+static bool isNightMode()
+{
+    time_t now = time(nullptr);
+    struct tm* ti = localtime(&now);
+    int hour = ti->tm_hour;
+    return (hour >= NIGHT_START_HOUR || hour < NIGHT_END_HOUR);
+}
+
+static bool isScreenOffTime()
+{
+    time_t now = time(nullptr);
+    struct tm* ti = localtime(&now);
+    int hour = ti->tm_hour;
+    return (hour >= SCREEN_OFF_START || hour < SCREEN_OFF_END);
+}
+
+/* ── Fetch departures from API ─────────────────────────────── */
+
+static void fetchDepartures()
+{
+    if (fetching || strlen(stops[currentStop].stopId) == 0) return;
+
+    fetching = true;
+    fetchStartTime = millis();
+
+    lv_label_set_text(label_status, "Chargement...");
+    lv_obj_clear_flag(spinner, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(btn_refresh, LV_OBJ_FLAG_HIDDEN);
+
+    // Vérifier WiFi avant de tenter le fetch
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi disconnected, skipping fetch");
+        strcpy(errorMsg, "WiFi deconnecte");
+        dataValid = false;
+        fetching = false;
+        return;
+    }
+
+    client.setInsecure();
+    client.setTimeout(10);
+
+    HTTPClient https;
+    String url = "https://prim.iledefrance-mobilites.fr/marketplace/stop-monitoring?MonitoringRef=STIF%3AStopPoint%3AQ%3A";
+    url += stops[currentStop].stopId;
+    url += "%3A";
+
+    Serial.printf("Fetching: %s\n", url.c_str());
+    https.setTimeout(10000);
+    esp_task_wdt_reset();
+
+    if (https.begin(client, url)) {
+        https.addHeader("Accept", "application/json");
+        https.addHeader("apikey", PRIM_API_KEY);
+
+        int httpCode = https.GET();
+        esp_task_wdt_reset();
+        Serial.printf("HTTP code: %d\n", httpCode);
+
+        if (httpCode == HTTP_CODE_OK) {
+            String payload = https.getString();
+            Serial.printf("Payload length: %d\n", payload.length());
+
+            int start = payload.indexOf('{');
+            if (start >= 0) {
+                JsonDocument filter;
+                JsonObject filterVisit = filter["Siri"]["ServiceDelivery"]["StopMonitoringDelivery"][0]["MonitoredStopVisit"].add<JsonObject>();
+                filterVisit["MonitoredVehicleJourney"]["LineRef"]["value"] = true;
+                filterVisit["MonitoredVehicleJourney"]["MonitoredCall"]["ExpectedDepartureTime"] = true;
+                filterVisit["MonitoredVehicleJourney"]["MonitoredCall"]["VehicleAtStop"] = true;
+                filterVisit["MonitoredVehicleJourney"]["DestinationName"][0]["value"] = true;
+
+                JsonDocument doc;
+                DeserializationError error = deserializeJson(doc, payload.c_str() + start,
+                    DeserializationOption::Filter(filter),
+                    DeserializationOption::NestingLimit(15));
+
+                payload = "";  // Free memory
+
+                if (!error) {
+                    JsonArray visits = doc["Siri"]["ServiceDelivery"]["StopMonitoringDelivery"][0]["MonitoredStopVisit"];
+
+                    departureCount = 0;
+                    time_t now = time(nullptr);
+
+                    for (JsonObject visit : visits) {
+                        if (departureCount >= MAX_DEPARTURES) break;
+
+                        const char* lineRef = visit["MonitoredVehicleJourney"]["LineRef"]["value"];
+                        const char* lineName = getLineName(lineRef);
+                        const char* expectedTime = visit["MonitoredVehicleJourney"]["MonitoredCall"]["ExpectedDepartureTime"];
+                        const char* destName = visit["MonitoredVehicleJourney"]["DestinationName"][0]["value"];
+                        bool atStop = visit["MonitoredVehicleJourney"]["MonitoredCall"]["VehicleAtStop"] | false;
+
+                        if (expectedTime) {
+                            int year, month, day, hour, minute, second;
+                            sscanf(expectedTime, "%d-%d-%dT%d:%d:%d",
+                                   &year, &month, &day, &hour, &minute, &second);
+
+                            int days = (year - 1970) * 365 + (year - 1969) / 4;
+                            int monthDays[] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+                            days += monthDays[month - 1] + day - 1;
+                            if (month > 2 && (year % 4 == 0)) days++;
+
+                            time_t departureTime = (time_t)days * 86400 + hour * 3600 + minute * 60 + second;
+                            int minutes = (departureTime - now) / 60;
+
+                            if (minutes >= 0) {
+                                departures[departureCount].minutesLeft = minutes;
+                                departures[departureCount].atStop = atStop;
+                                strncpy(departures[departureCount].lineName,
+                                       lineName ? lineName : "?", 9);
+                                departures[departureCount].lineName[9] = '\0';
+                                strncpy(departures[departureCount].destination,
+                                       destName ? destName : "", 39);
+                                departures[departureCount].destination[39] = '\0';
+                                departureCount++;
+                            }
+                        }
+                    }
+
+                    dataValid = true;
+                    strcpy(errorMsg, "");
+                    consecutiveErrors = 0;
+
+                    struct tm* ti = localtime(&now);
+                    sprintf(lastUpdateTime, "%02d:%02d", ti->tm_hour, ti->tm_min);
+
+                } else {
+                    sprintf(errorMsg, "JSON: %s", error.c_str());
+                    dataValid = false;
+                    consecutiveErrors++;
+                }
+            } else {
+                strcpy(errorMsg, "No JSON");
+                dataValid = false;
+                consecutiveErrors++;
+            }
+        } else {
+            sprintf(errorMsg, "HTTP %d", httpCode);
+            dataValid = false;
+            consecutiveErrors++;
+        }
+
+        https.end();
+    } else {
+        strcpy(errorMsg, "Connexion impossible");
+        dataValid = false;
+        consecutiveErrors++;
+    }
+
+    lastUpdate = millis();
+    fetching = false;
+}
+
+/* ── Update UI with departure data ─────────────────────────── */
+
+static void updateUI()
+{
+    // Hide spinner, show button
+    lv_obj_add_flag(spinner, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(btn_refresh, LV_OBJ_FLAG_HIDDEN);
+
+    // Night mode overlay
+    if (nightMode) {
+        lv_obj_clear_flag(night_overlay, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(label_status, "Mode veille (06h-20h)");
+        return;
+    }
+    lv_obj_add_flag(night_overlay, LV_OBJ_FLAG_HIDDEN);
+
+    // Update header
+    char buf[64];
+    snprintf(buf, sizeof(buf), LV_SYMBOL_GPS " %s", stops[currentStop].stopName);
+    lv_label_set_text(label_stop, buf);
+
+    // Update status
+    if (!dataValid) {
+        if (strlen(errorMsg) > 0) {
+            lv_label_set_text(label_status, errorMsg);
+        }
+    } else if (departureCount == 0) {
+        lv_label_set_text(label_status, "Aucun bus prevu");
+    } else {
+        snprintf(buf, sizeof(buf), "%d passage%s", departureCount, departureCount > 1 ? "s" : "");
+        lv_label_set_text(label_status, buf);
+    }
+
+    // Update time
+    snprintf(buf, sizeof(buf), "MAJ: %s", lastUpdateTime);
+    lv_label_set_text(label_update_time, buf);
+
+    // Update departures
+    for (int i = 0; i < MAX_DEPARTURES; i++) {
+        if (i < departureCount && dataValid) {
+            char timeStr[20];
+            lv_color_t color;
+
+            if (departures[i].atStop) {
+                strcpy(timeStr, "A L'ARRET");
+                color = lv_color_hex(COLOR_IMMINENT);
+            } else if (departures[i].minutesLeft == 0) {
+                strcpy(timeStr, "Imminent");
+                color = lv_color_hex(COLOR_IMMINENT);
+            } else if (departures[i].minutesLeft <= 6) {
+                snprintf(timeStr, sizeof(timeStr), "%d min", departures[i].minutesLeft);
+                color = lv_color_hex(COLOR_IMMINENT);
+            } else if (departures[i].minutesLeft <= 10) {
+                snprintf(timeStr, sizeof(timeStr), "%d min", departures[i].minutesLeft);
+                color = lv_color_hex(COLOR_SOON);
+            } else if (departures[i].minutesLeft < 60) {
+                snprintf(timeStr, sizeof(timeStr), "%d min", departures[i].minutesLeft);
+                color = lv_color_hex(COLOR_NORMAL);
+            } else {
+                int h = departures[i].minutesLeft / 60;
+                int m = departures[i].minutesLeft % 60;
+                snprintf(timeStr, sizeof(timeStr), "%dh%02d", h, m);
+                color = lv_color_hex(COLOR_NORMAL);
+            }
+
+            lv_label_set_text(labels_time[i], timeStr);
+            lv_obj_set_style_text_color(labels_time[i], color, 0);
+
+            char destBuf[60];
+            snprintf(destBuf, sizeof(destBuf), "[%s] %s", departures[i].lineName, departures[i].destination);
+            lv_label_set_text(labels_dest[i], destBuf);
+            lv_obj_clear_flag(lv_obj_get_parent(labels_time[i]), LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(lv_obj_get_parent(labels_time[i]), LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
+/* ── Forward declaration ───────────────────────────────────── */
+
+static void updateStopButtons();
+
+/* ── Button callbacks ──────────────────────────────────────── */
+
+static void btn_refresh_cb(lv_event_t *e)
+{
+    if (!fetching) {
+        manualRefreshRequested = true;
+    }
+}
+
+static void btn_foch_cb(lv_event_t *e)
+{
+    if (currentStop != STOP_FOCH && !fetching) {
+        currentStop = STOP_FOCH;
+        stopSwitchTime = 0;
+        manualRefreshRequested = true;
+        updateStopButtons();
+    }
+}
+
+static void btn_eglise_cb(lv_event_t *e)
+{
+    if (currentStop != STOP_EGLISE && !fetching) {
+        currentStop = STOP_EGLISE;
+        stopSwitchTime = millis();
+        manualRefreshRequested = true;
+        updateStopButtons();
+    }
+}
+
+static void updateStopButtons()
+{
+    if (currentStop == STOP_FOCH) {
+        lv_obj_set_style_bg_color(btn_foch, lv_color_hex(COLOR_ACCENT), 0);
+        lv_obj_set_style_bg_color(btn_eglise, lv_color_hex(COLOR_CARD), 0);
+    } else {
+        lv_obj_set_style_bg_color(btn_foch, lv_color_hex(COLOR_CARD), 0);
+        lv_obj_set_style_bg_color(btn_eglise, lv_color_hex(COLOR_ACCENT), 0);
+    }
+}
+
+/* ── Create UI (480x480 square) ────────────────────────────── */
+
+static void createUI()
+{
+    // Background
+    lv_obj_set_style_bg_color(lv_scr_act(), lv_color_hex(COLOR_BG), 0);
+
+    // Title bar
+    lv_obj_t *title_bar = lv_obj_create(lv_scr_act());
+    lv_obj_remove_style_all(title_bar);
+    lv_obj_set_size(title_bar, 480, 55);
+    lv_obj_align(title_bar, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_bg_color(title_bar, lv_color_hex(COLOR_CARD), 0);
+    lv_obj_set_style_bg_opa(title_bar, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(title_bar, 10, 0);
+
+    // Stop buttons (Foch / Eglise)
+    btn_foch = lv_btn_create(title_bar);
+    lv_obj_set_size(btn_foch, 120, 40);
+    lv_obj_align(btn_foch, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_bg_color(btn_foch, lv_color_hex(COLOR_ACCENT), 0);
+    lv_obj_add_event_cb(btn_foch, btn_foch_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *lbl_foch = lv_label_create(btn_foch);
+    lv_label_set_text(lbl_foch, "Foch");
+    lv_obj_set_style_text_color(lbl_foch, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_text_font(lbl_foch, &lv_font_montserrat_18, 0);
+    lv_obj_center(lbl_foch);
+
+    btn_eglise = lv_btn_create(title_bar);
+    lv_obj_set_size(btn_eglise, 120, 40);
+    lv_obj_align(btn_eglise, LV_ALIGN_LEFT_MID, 130, 0);
+    lv_obj_set_style_bg_color(btn_eglise, lv_color_hex(COLOR_CARD), 0);
+    lv_obj_add_event_cb(btn_eglise, btn_eglise_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *lbl_eglise = lv_label_create(btn_eglise);
+    lv_label_set_text(lbl_eglise, "Eglise");
+    lv_obj_set_style_text_color(lbl_eglise, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_text_font(lbl_eglise, &lv_font_montserrat_18, 0);
+    lv_obj_center(lbl_eglise);
+
+    // Refresh button
+    btn_refresh = lv_btn_create(title_bar);
+    lv_obj_set_size(btn_refresh, 90, 40);
+    lv_obj_align(btn_refresh, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_set_style_bg_color(btn_refresh, lv_color_hex(0x444444), 0);
+    lv_obj_add_event_cb(btn_refresh, btn_refresh_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *btn_label = lv_label_create(btn_refresh);
+    lv_label_set_text(btn_label, LV_SYMBOL_REFRESH);
+    lv_obj_set_style_text_color(btn_label, lv_color_hex(COLOR_TEXT), 0);
+    lv_obj_center(btn_label);
+
+    // Spinner (hidden by default)
+    spinner = lv_spinner_create(title_bar, 1000, 60);
+    lv_obj_set_size(spinner, 40, 40);
+    lv_obj_align(spinner, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_flag(spinner, LV_OBJ_FLAG_HIDDEN);
+
+    // Stop name
+    label_stop = lv_label_create(lv_scr_act());
+    lv_label_set_text(label_stop, LV_SYMBOL_GPS " ---");
+    lv_obj_set_style_text_color(label_stop, lv_color_hex(COLOR_TEXT), 0);
+    lv_obj_set_style_text_font(label_stop, &lv_font_montserrat_20, 0);
+    lv_obj_align(label_stop, LV_ALIGN_TOP_LEFT, 15, 65);
+
+    // Departures container (taller for 480x480 screen)
+    cont_departures = lv_obj_create(lv_scr_act());
+    lv_obj_remove_style_all(cont_departures);
+    lv_obj_set_size(cont_departures, 460, 320);
+    lv_obj_align(cont_departures, LV_ALIGN_TOP_MID, 0, 100);
+    lv_obj_set_flex_flow(cont_departures, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(cont_departures, 10, 0);
+
+    // Create departure rows (taller rows for bigger screen)
+    for (int i = 0; i < MAX_DEPARTURES; i++) {
+        lv_obj_t *row = lv_obj_create(cont_departures);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_size(row, 460, 50);
+        lv_obj_set_style_bg_color(row, lv_color_hex(COLOR_CARD), 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(row, 10, 0);
+        lv_obj_set_style_pad_hor(row, 15, 0);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+        labels_time[i] = lv_label_create(row);
+        lv_label_set_text(labels_time[i], "--");
+        lv_obj_set_style_text_font(labels_time[i], &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_color(labels_time[i], lv_color_hex(COLOR_NORMAL), 0);
+        lv_obj_set_width(labels_time[i], 120);
+
+        labels_dest[i] = lv_label_create(row);
+        lv_label_set_text(labels_dest[i], "---");
+        lv_obj_set_style_text_font(labels_dest[i], &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(labels_dest[i], lv_color_hex(COLOR_TEXT), 0);
+        lv_label_set_long_mode(labels_dest[i], LV_LABEL_LONG_DOT);
+        lv_obj_set_flex_grow(labels_dest[i], 1);
+
+        lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    // Status bar
+    lv_obj_t *status_bar = lv_obj_create(lv_scr_act());
+    lv_obj_remove_style_all(status_bar);
+    lv_obj_set_size(status_bar, 460, 30);
+    lv_obj_align(status_bar, LV_ALIGN_BOTTOM_MID, 0, -15);
+    lv_obj_set_flex_flow(status_bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(status_bar, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    label_status = lv_label_create(status_bar);
+    lv_label_set_text(label_status, "Demarrage...");
+    lv_obj_set_style_text_color(label_status, lv_color_hex(COLOR_DIMMED), 0);
+    lv_obj_set_style_text_font(label_status, &lv_font_montserrat_14, 0);
+
+    label_update_time = lv_label_create(status_bar);
+    lv_label_set_text(label_update_time, "MAJ: --:--");
+    lv_obj_set_style_text_color(label_update_time, lv_color_hex(COLOR_DIMMED), 0);
+    lv_obj_set_style_text_font(label_update_time, &lv_font_montserrat_14, 0);
+
+    // Night mode overlay (480x480)
+    night_overlay = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(night_overlay, 480, 480);
+    lv_obj_center(night_overlay);
+    lv_obj_set_style_bg_color(night_overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(night_overlay, LV_OPA_90, 0);
+    lv_obj_add_flag(night_overlay, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *night_label = lv_label_create(night_overlay);
+    lv_label_set_text(night_label, LV_SYMBOL_EYE_CLOSE "\nMode veille\n\nService 06h00 - 20h00");
+    lv_obj_set_style_text_align(night_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(night_label, lv_color_hex(COLOR_DIMMED), 0);
+    lv_obj_set_style_text_font(night_label, &lv_font_montserrat_20, 0);
+    lv_obj_center(night_label);
+}
+
+/* ── Setup ─────────────────────────────────────────────────── */
+
+void setup()
+{
+    Serial.begin(115200);
+    Serial.println("\nBus_Tracker - ESP32-4848S040");
+
+    // Watchdog: reboot automatique si le systeme se fige > 30s
+    esp_task_wdt_config_t wdt_config = {
+        .timeout_ms = WDT_TIMEOUT_SEC * 1000,
+        .idle_core_mask = 0,
+        .trigger_panic = true,
+    };
+    esp_task_wdt_init(&wdt_config);
+    esp_task_wdt_add(NULL);
+
+    // Backlight ON
+    pinMode(GFX_BL, OUTPUT);
+    digitalWrite(GFX_BL, HIGH);
+
+    // Init display
+    Serial.println("Initializing display...");
+    gfx->begin();
+    gfx->fillScreen(0x0000);
+
+    // Init touch
+    Wire.begin(TP_SDA, TP_SCL);
+    touch.begin();
+    touch.setRotation(ROTATION_NORMAL);
+
+    // Init LVGL
+    lv_init();
+
+    // LVGL buffer in PSRAM
+    buf1 = (lv_color_t *)ps_malloc(SCREEN_W * SCREEN_H * sizeof(lv_color_t));
+    if (!buf1) {
+        Serial.println("ERROR: PSRAM alloc failed");
+        buf1 = (lv_color_t *)malloc(SCREEN_W * 100 * sizeof(lv_color_t));
+        lv_disp_draw_buf_init(&draw_buf, buf1, NULL, SCREEN_W * 100);
+    } else {
+        lv_disp_draw_buf_init(&draw_buf, buf1, NULL, SCREEN_W * SCREEN_H);
+    }
+
+    // Setup display driver
+    lv_disp_drv_init(&disp_drv);
+    disp_drv.hor_res = SCREEN_W;
+    disp_drv.ver_res = SCREEN_H;
+    disp_drv.flush_cb = disp_flush_cb;
+    disp_drv.draw_buf = &draw_buf;
+    lv_disp_drv_register(&disp_drv);
+
+    // Setup touch input driver
+    lv_indev_drv_init(&indev_drv);
+    indev_drv.type = LV_INDEV_TYPE_POINTER;
+    indev_drv.read_cb = touch_read_cb;
+    lv_indev_drv_register(&indev_drv);
+
+    // Create UI
+    createUI();
+
+    // Connect WiFi
+    lv_label_set_text(label_status, "Connexion WiFi...");
+
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+        delay(500);
+        esp_task_wdt_reset();
+        lv_timer_handler();
+        attempts++;
+        Serial.print(".");
+    }
+    Serial.println();
+
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.printf("Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+
+        // Config NTP
+        configTime(0, 0, "pool.ntp.org");
+        setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
+        tzset();
+
+        lv_label_set_text(label_status, "Synchro NTP...");
+        lv_timer_handler();
+
+        // Wait for NTP sync (time > year 2024)
+        int ntpAttempts = 0;
+        while (time(nullptr) < 1704067200 && ntpAttempts < 20) {
+            delay(500);
+            esp_task_wdt_reset();
+            lv_timer_handler();
+            ntpAttempts++;
+            Serial.print(".");
+        }
+        Serial.println();
+
+        if (time(nullptr) >= 1704067200) {
+            Serial.println("NTP synced!");
+            char buf[64];
+            snprintf(buf, sizeof(buf), "WiFi OK: %s", WiFi.localIP().toString().c_str());
+            lv_label_set_text(label_status, buf);
+
+            // First fetch
+            fetchDepartures();
+            updateUI();
+        } else {
+            Serial.println("NTP sync failed");
+            lv_label_set_text(label_status, "NTP: echec synchro");
+        }
+    } else {
+        Serial.println("WiFi connection failed!");
+        lv_label_set_text(label_status, "WiFi: echec connexion");
+    }
+
+    Serial.println("Setup complete!");
+}
+
+/* ── Loop ──────────────────────────────────────────────────── */
+
+void loop()
+{
+    esp_task_wdt_reset();
+    lv_timer_handler();
+
+    // Detection fetch bloque (securite logicielle)
+    if (fetching && (millis() - fetchStartTime > FETCH_TIMEOUT_MS)) {
+        Serial.println("WARN: fetch timeout, forcing reset flag");
+        fetching = false;
+        strcpy(errorMsg, "Timeout fetch");
+        dataValid = false;
+        consecutiveErrors++;
+        updateUI();
+    }
+
+    // Reboot si trop d'erreurs consecutives
+    if (consecutiveErrors >= 10) {
+        Serial.println("ERROR: 10 erreurs consecutives, reboot...");
+        delay(100);
+        ESP.restart();
+    }
+
+    // Reconnexion WiFi automatique
+    if (WiFi.status() != WL_CONNECTED) {
+        static unsigned long lastReconnectAttempt = 0;
+        if (millis() - lastReconnectAttempt > 10000) {
+            lastReconnectAttempt = millis();
+            Serial.println("WiFi lost, reconnecting...");
+            WiFi.disconnect();
+            WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+            lv_label_set_text(label_status, "Reconnexion WiFi...");
+        }
+    }
+
+    // Check screen off time (22h-5h)
+    bool wasScreenOff = screenOff;
+    screenOff = isScreenOffTime();
+
+    if (screenOff != wasScreenOff) {
+        if (screenOff) {
+            digitalWrite(GFX_BL, LOW);
+        } else {
+            digitalWrite(GFX_BL, HIGH);
+        }
+    }
+
+    // Check night mode
+    bool wasNightMode = nightMode;
+    nightMode = isNightMode();
+
+    if (nightMode != wasNightMode) {
+        updateUI();
+    }
+
+    // Auto return to Foch after 2 minutes
+    if (currentStop != STOP_FOCH && stopSwitchTime > 0) {
+        if (millis() - stopSwitchTime >= AUTO_RETURN_DELAY) {
+            currentStop = STOP_FOCH;
+            stopSwitchTime = 0;
+            updateStopButtons();
+            manualRefreshRequested = true;
+        }
+    }
+
+    // Manual refresh requested (from button)
+    if (manualRefreshRequested && !fetching) {
+        manualRefreshRequested = false;
+        fetchDepartures();
+        updateUI();
+    }
+
+    // Periodic update (only if not night mode)
+    if (!nightMode && !fetching) {
+        unsigned long interval = getUpdateInterval();
+        if (millis() - lastUpdate >= interval) {
+            fetchDepartures();
+            updateUI();
+        }
+    }
+
+    delay(5);
+}

@@ -18,6 +18,7 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include "credentials.h"
+#include "esp32s3/rom/cache.h"
 
 /* ── Display configuration ─────────────────────────────────── */
 
@@ -36,9 +37,13 @@ Arduino_ESP32RGBPanel *rgbpanel = new Arduino_ESP32RGBPanel(
     11 /* R0 */, 12 /* R1 */, 13 /* R2 */, 14 /* R3 */, 0 /* R4 */,
     8 /* G0 */, 20 /* G1 */, 3 /* G2 */, 46 /* G3 */, 9 /* G4 */, 10 /* G5 */,
     4 /* B0 */, 5 /* B1 */, 6 /* B2 */, 7 /* B3 */, 15 /* B4 */,
-    1, 10, 8, 40,   // hsync: polarity, front_porch, pulse_width, back_porch
+    1, 10, 8, 50,   // hsync: polarity, front_porch, pulse_width, back_porch
     1, 10, 8, 20,   // vsync: polarity, front_porch, pulse_width, back_porch
-    1, 12000000);    // pclk: active_neg, speed
+    1, 12000000,     // pclk: active_neg, speed
+    false,           // useBigEndian
+    0,               // de_idle_high
+    0,               // pclk_idle_high
+    480 * 20);       // bounce_buffer_size_px (20 lines in internal SRAM)
 
 Arduino_RGB_Display *gfx = new Arduino_RGB_Display(
     SCREEN_W, SCREEN_H, rgbpanel, 0 /* rotation */, true /* auto_flush */,
@@ -94,6 +99,7 @@ PubSubClient mqtt(espClient);
 
 static lv_disp_draw_buf_t draw_buf;
 static lv_color_t *buf1 = NULL;
+static lv_color_t *buf2 = NULL;
 static lv_disp_drv_t disp_drv;
 static lv_indev_drv_t indev_drv;
 
@@ -132,12 +138,20 @@ static void ui_init(void);
 
 static void disp_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
                            lv_color_t *color_p) {
-    uint32_t w = (area->x2 - area->x1 + 1);
-    uint32_t h = (area->y2 - area->y1 + 1);
-
-    gfx->draw16bitRGBBitmap(area->x1, area->y1,
-                             (uint16_t *)&color_p->full, w, h);
-
+    uint16_t *fb = (uint16_t *)gfx->getFramebuffer();
+    if (fb) {
+        // Fast line-by-line memcpy (much faster than pixel-by-pixel draw16bitRGBBitmap)
+        int32_t w = area->x2 - area->x1 + 1;
+        uint16_t *src = (uint16_t *)color_p;
+        for (int32_t y = area->y1; y <= area->y2; y++) {
+            memcpy(&fb[y * SCREEN_W + area->x1], src, w * sizeof(uint16_t));
+            src += w;
+        }
+        // Flush cache so DMA sees updated pixels
+        uint32_t flush_start = (uint32_t)&fb[area->y1 * SCREEN_W];
+        uint32_t flush_size = (area->y2 - area->y1 + 1) * SCREEN_W * sizeof(uint16_t);
+        Cache_WriteBack_Addr(flush_start, flush_size);
+    }
     lv_disp_flush_ready(drv);
 }
 
@@ -504,10 +518,10 @@ void setup() {
     // Init LVGL
     lv_init();
 
-    // Allocate draw buffer in PSRAM (full frame)
+    // LVGL buffer in PSRAM, fast memcpy to GFX framebuffer on flush
     buf1 = (lv_color_t *)ps_malloc(SCREEN_W * SCREEN_H * sizeof(lv_color_t));
     if (!buf1) {
-        Serial.println("ERROR: PSRAM alloc failed, falling back to malloc");
+        Serial.println("ERROR: PSRAM alloc failed");
         buf1 = (lv_color_t *)malloc(SCREEN_W * 100 * sizeof(lv_color_t));
         lv_disp_draw_buf_init(&draw_buf, buf1, NULL, SCREEN_W * 100);
     } else {
