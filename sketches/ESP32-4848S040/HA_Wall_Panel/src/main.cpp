@@ -36,7 +36,7 @@ Arduino_ESP32RGBPanel *rgbpanel = new Arduino_ESP32RGBPanel(
     11 /* R0 */, 12 /* R1 */, 13 /* R2 */, 14 /* R3 */, 0 /* R4 */,
     8 /* G0 */, 20 /* G1 */, 3 /* G2 */, 46 /* G3 */, 9 /* G4 */, 10 /* G5 */,
     4 /* B0 */, 5 /* B1 */, 6 /* B2 */, 7 /* B3 */, 15 /* B4 */,
-    1, 10, 8, 60,   // hsync: polarity, front_porch, pulse_width, back_porch
+    1, 10, 8, 40,   // hsync: polarity, front_porch, pulse_width, back_porch
     1, 10, 8, 20,   // vsync: polarity, front_porch, pulse_width, back_porch
     1, 12000000);    // pclk: active_neg, speed
 
@@ -71,12 +71,16 @@ struct LightEntity {
 };
 
 LightEntity lights[] = {
-    {"salon", "Salon", false},
-    {"cuisine", "Cuisine", false},
-    {"chambre", "Chambre", false},
-    {"bureau", "Bureau", false},
+    {"Guirlande", "Guirlande", false},
+    {"Lit", "Lit", false},
+    {"Suspension", "Suspension", false},
 };
 const int light_count = sizeof(lights) / sizeof(lights[0]);
+
+/* ── Motion sensor configuration ──────────────────────────── */
+
+#define MOTION_TOPIC "zigbee2mqtt/MotionSensor01"
+bool motion_state = false;
 
 /* ── MQTT configuration ────────────────────────────────────── */
 
@@ -101,6 +105,9 @@ static lv_obj_t *lbl_light[MAX_LIGHTS] = {};
 static lv_obj_t *btn_relay[RELAY_COUNT] = {};
 static lv_obj_t *lbl_relay[RELAY_COUNT] = {};
 
+static lv_obj_t *motion_card = NULL;
+static lv_obj_t *lbl_motion = NULL;
+
 static lv_obj_t *mqtt_led = NULL;
 
 /* ── Timers ────────────────────────────────────────────────── */
@@ -118,6 +125,7 @@ static void publish_relay_states(void);
 static void toggle_light(int idx);
 static void update_light_btn(int idx);
 static void update_relay_btn(int idx);
+static void update_motion_card(void);
 static void ui_init(void);
 
 /* ── LVGL display flush callback ───────────────────────────── */
@@ -172,6 +180,13 @@ static void mqtt_callback(char *topic, byte *payload, unsigned int length) {
         }
     }
 
+    // Check motion sensor
+    if (strcmp(topic, MOTION_TOPIC) == 0) {
+        motion_state = (strstr(msg, "\"occupancy\":true") != NULL);
+        update_motion_card();
+        return;
+    }
+
     // Check light states: zigbee2mqtt/<entity_id>
     for (int i = 0; i < light_count; i++) {
         char light_topic[128];
@@ -204,6 +219,9 @@ static void mqtt_connect(void) {
             snprintf(topic, sizeof(topic), "wall_panel/relay_%d/set", i + 1);
             mqtt.subscribe(topic);
         }
+
+        // Subscribe to motion sensor
+        mqtt.subscribe(MOTION_TOPIC);
 
         // Subscribe to light states
         for (int i = 0; i < light_count; i++) {
@@ -307,6 +325,22 @@ static void update_relay_btn(int idx) {
     }
 }
 
+/* ── Update motion card appearance ─────────────────────────── */
+
+static void update_motion_card(void) {
+    if (!motion_card || !lbl_motion) return;
+
+    if (motion_state) {
+        lv_obj_set_style_bg_color(motion_card, lv_color_hex(0x4a1a2e), 0);
+        lv_obj_set_style_text_color(lbl_motion, lv_color_hex(0xff6644), 0);
+        lv_label_set_text(lbl_motion, LV_SYMBOL_EYE_OPEN "  Mouvement detecte");
+    } else {
+        lv_obj_set_style_bg_color(motion_card, lv_color_hex(0x16213e), 0);
+        lv_obj_set_style_text_color(lbl_motion, lv_color_hex(0x888888), 0);
+        lv_label_set_text(lbl_motion, LV_SYMBOL_EYE_CLOSE "  Aucun mouvement");
+    }
+}
+
 /* ── Light button callback ─────────────────────────────────── */
 
 static void light_cb(lv_event_t *e) {
@@ -391,6 +425,22 @@ static void ui_init(void) {
         lv_obj_add_event_cb(btn_light[i], light_cb, LV_EVENT_SHORT_CLICKED,
                             (void *)(intptr_t)i);
     }
+
+    // ── Motion sensor card (in the grid, same size as light buttons) ──
+    motion_card = lv_obj_create(light_grid);
+    lv_obj_set_size(motion_card, 218, 155);
+    lv_obj_set_style_bg_color(motion_card, lv_color_hex(0x16213e), 0);
+    lv_obj_set_style_bg_opa(motion_card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(motion_card, 15, 0);
+    lv_obj_set_style_border_width(motion_card, 0, 0);
+    lv_obj_clear_flag(motion_card, LV_OBJ_FLAG_SCROLLABLE);
+
+    lbl_motion = lv_label_create(motion_card);
+    lv_label_set_text(lbl_motion, LV_SYMBOL_EYE_CLOSE "  Aucun mouvement");
+    lv_obj_set_style_text_color(lbl_motion, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_text_font(lbl_motion, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_align(lbl_motion, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_center(lbl_motion);
 
     // ── Relay buttons row ──
     lv_obj_t *relay_row = lv_obj_create(scr);
