@@ -57,6 +57,7 @@ Chaque sketch doit avoir un en-tête standardisé :
 
 Les sketches sont organisés par type de carte dans `sketches/` :
 - `CircuitPlayground-Express/` - Carte Adafruit avec LEDs, capteurs, pads capacitifs
+- `ESP32-4848S040/` - ESP32-S3 avec écran tactile 4" IPS 480×480 et 3 relais (Guition)
 - `ESP32-2432S028/` - ESP32 avec écran tactile 2.8" TFT 320×240 (Cheap Yellow Display)
 - `HW-364B/` - ESP8266 avec écran OLED bicolore (jaune/bleu) intégré
 - `JC3248W535C/` - ESP32-S3 avec écran tactile 3.5" IPS 320×480
@@ -87,6 +88,7 @@ ln -s /chemin/absolu/vers/sketches/common/credentials.h credentials.h
 | Carte | FQBN |
 |-------|------|
 | Circuit Playground Express | `adafruit:samd:adafruit_circuitplayground_m0` |
+| ESP32-4848S040 (Guition 4" 480×480) | PlatformIO `esp32-s3-devkitm-1` |
 | ESP32-2432S028 (Cheap Yellow Display) | `esp32:esp32:esp32` |
 | HW-364B (ESP8266 + OLED) | `esp8266:esp8266:nodemcuv2` |
 | NodeMCU (ESP8266) | `esp8266:esp8266:nodemcuv2` |
@@ -227,6 +229,67 @@ pio device monitor                   # Monitor série
 - `WiFi_Scanner/` - Scanner WiFi avec liste tactile et signal coloré
 - `Bus_Tracker/` - Suivi des bus via API PRIM Île-de-France Mobilités
 - `SD_Browser/` - Explorateur de carte SD avec infos techniques
+
+## ESP32-4848S040
+
+Carte ESP32-S3 avec écran tactile capacitif 4" IPS (480×480) et 3 relais. Fabricant : Guition (JCZN/DIYmalls).
+
+**MCU** : ESP32-S3-WROOM-1U-N16R8 (dual-core Xtensa LX7 240MHz, WiFi, BLE 5, Flash 16MB, PSRAM 8MB OPI)
+
+**USB** : CH340 (pas USB CDC natif) → port `/dev/ttyUSB0`
+
+**Écran LCD** (contrôleur ST7701S, interface RGB 16-bit parallèle + SPI pour init) :
+| Signal | GPIO |
+|--------|------|
+| DE | 18 |
+| VSYNC | 17 |
+| HSYNC | 16 |
+| PCLK | 21 |
+| R0-R4 | 11, 12, 13, 14, 0 |
+| G0-G5 | 8, 20, 3, 46, 9, 10 |
+| B0-B4 | 4, 5, 6, 7, 15 |
+| Backlight | 38 |
+| SPI CS (init) | 39 |
+| SPI SCK (init) | 48 |
+| SPI MOSI (init) | 47 |
+
+**Tactile** (GT911, I2C) :
+| Signal | GPIO |
+|--------|------|
+| SDA | 19 |
+| SCL | 45 |
+| INT | -1 (non connecté) |
+| Adresse | 0x5D |
+
+**Relais** (3, partagés avec audio I2S — choisir l'un ou l'autre) :
+| Relais | GPIO |
+|--------|------|
+| Relay 1 | 40 |
+| Relay 2 | 2 |
+| Relay 3 | 1 |
+
+**Carte SD** (SPI, partagé avec display SPI init) :
+| Signal | GPIO |
+|--------|------|
+| CS | 42 |
+| MISO | 41 |
+| MOSI | 47 |
+| SCK | 48 |
+
+**Framework** : PlatformIO avec pioarduino (Arduino sur ESP-IDF 5.1).
+
+**Bibliothèques** : Arduino_GFX (ST7701S), LVGL 8.4, TAMC_GT911
+
+**Compilation/Upload** :
+```bash
+cd sketches/ESP32-4848S040/<projet>
+pio run                              # Compiler
+pio run -t upload                    # Uploader
+pio device monitor                   # Monitor série
+```
+
+**Sketches disponibles** :
+- `System_Dashboard/` - Dashboard système avec jauges RAM/PSRAM, WiFi, contrôle 3 relais tactile
 
 ## ESP32-2432S028
 
