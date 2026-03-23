@@ -16,6 +16,7 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <time.h>
+#include <esp_task_wdt.h>
 #include <lvgl.h>
 #include "display.h"
 #include "esp_bsp.h"
@@ -34,6 +35,9 @@
 #define COLOR_SOON      0xfca311
 #define COLOR_NORMAL    0x4cc9f0
 #define COLOR_DIMMED    0x666666
+
+// Watchdog timeout (seconds)
+#define WDT_TIMEOUT_SEC     30
 
 // Update intervals (ms)
 #define INTERVAL_RUSH_HOUR  30000   // 30 sec heures de pointe
@@ -124,7 +128,10 @@ static char errorMsg[50] = "";
 static bool nightMode = false;
 static bool screenOff = false;
 static bool fetching = false;
+static unsigned long fetchStartTime = 0;
+#define FETCH_TIMEOUT_MS 20000  // 20s max pour un fetch
 static bool manualRefreshRequested = false;
+static int consecutiveErrors = 0;
 
 // UI elements
 static lv_obj_t *label_stop;
@@ -185,6 +192,7 @@ static void fetchDepartures()
     if (fetching || strlen(stops[currentStop].stopId) == 0) return;
 
     fetching = true;
+    fetchStartTime = millis();
 
     bsp_display_lock(0);
     lv_label_set_text(label_status, "Chargement...");
@@ -192,7 +200,17 @@ static void fetchDepartures()
     lv_obj_add_flag(btn_refresh, LV_OBJ_FLAG_HIDDEN);
     bsp_display_unlock();
 
+    // Vérifier WiFi avant de tenter le fetch
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi disconnected, skipping fetch");
+        strcpy(errorMsg, "WiFi deconnecte");
+        dataValid = false;
+        fetching = false;
+        return;
+    }
+
     client.setInsecure();
+    client.setTimeout(10);  // 10s timeout sur le TLS handshake
 
     HTTPClient https;
     String url = "https://prim.iledefrance-mobilites.fr/marketplace/stop-monitoring?MonitoringRef=STIF%3AStopPoint%3AQ%3A";
@@ -200,13 +218,15 @@ static void fetchDepartures()
     url += "%3A";
 
     Serial.printf("Fetching: %s\n", url.c_str());
-    https.setTimeout(15000);
+    https.setTimeout(10000);  // 10s timeout HTTP
+    esp_task_wdt_reset();
 
     if (https.begin(client, url)) {
         https.addHeader("Accept", "application/json");
         https.addHeader("apikey", PRIM_API_KEY);
 
         int httpCode = https.GET();
+        esp_task_wdt_reset();
         Serial.printf("HTTP code: %d\n", httpCode);
 
         if (httpCode == HTTP_CODE_OK) {
@@ -276,6 +296,7 @@ static void fetchDepartures()
 
                     dataValid = true;
                     strcpy(errorMsg, "");
+                    consecutiveErrors = 0;
 
                     struct tm* ti = localtime(&now);
                     sprintf(lastUpdateTime, "%02d:%02d", ti->tm_hour, ti->tm_min);
@@ -283,20 +304,24 @@ static void fetchDepartures()
                 } else {
                     sprintf(errorMsg, "JSON: %s", error.c_str());
                     dataValid = false;
+                    consecutiveErrors++;
                 }
             } else {
                 strcpy(errorMsg, "No JSON");
                 dataValid = false;
+                consecutiveErrors++;
             }
         } else {
             sprintf(errorMsg, "HTTP %d", httpCode);
             dataValid = false;
+            consecutiveErrors++;
         }
 
         https.end();
     } else {
         strcpy(errorMsg, "Connexion impossible");
         dataValid = false;
+        consecutiveErrors++;
     }
 
     lastUpdate = millis();
@@ -575,6 +600,15 @@ void setup()
     Serial.begin(115200);
     Serial.println("\nBus_Tracker - JC3248W535C");
 
+    // Watchdog: reboot automatique si le système se fige > 30s
+    esp_task_wdt_config_t wdt_config = {
+        .timeout_ms = WDT_TIMEOUT_SEC * 1000,
+        .idle_core_mask = 0,
+        .trigger_panic = true,
+    };
+    esp_task_wdt_init(&wdt_config);
+    esp_task_wdt_add(NULL);  // Surveiller la tâche courante (loopTask)
+
     // Initialize display
     Serial.println("Initializing display...");
     bsp_display_cfg_t cfg = {
@@ -608,6 +642,7 @@ void setup()
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED && attempts < 30) {
         delay(500);
+        esp_task_wdt_reset();
         attempts++;
         Serial.print(".");
     }
@@ -629,6 +664,7 @@ void setup()
         int ntpAttempts = 0;
         while (time(nullptr) < 1704067200 && ntpAttempts < 20) {  // 1704067200 = 2024-01-01
             delay(500);
+            esp_task_wdt_reset();
             ntpAttempts++;
             Serial.print(".");
         }
@@ -663,6 +699,40 @@ void setup()
 
 void loop()
 {
+    esp_task_wdt_reset();
+
+    // Détection fetch bloqué (sécurité logicielle)
+    if (fetching && (millis() - fetchStartTime > FETCH_TIMEOUT_MS)) {
+        Serial.println("WARN: fetch timeout, forcing reset flag");
+        fetching = false;
+        strcpy(errorMsg, "Timeout fetch");
+        dataValid = false;
+        consecutiveErrors++;
+        updateUI();
+    }
+
+    // Reboot si trop d'erreurs consécutives (probable état corrompu)
+    if (consecutiveErrors >= 10) {
+        Serial.println("ERROR: 10 erreurs consecutives, reboot...");
+        delay(100);
+        ESP.restart();
+    }
+
+    // Reconnexion WiFi automatique
+    if (WiFi.status() != WL_CONNECTED) {
+        static unsigned long lastReconnectAttempt = 0;
+        if (millis() - lastReconnectAttempt > 10000) {  // Toutes les 10s
+            lastReconnectAttempt = millis();
+            Serial.println("WiFi lost, reconnecting...");
+            WiFi.disconnect();
+            WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+            bsp_display_lock(0);
+            lv_label_set_text(label_status, "Reconnexion WiFi...");
+            bsp_display_unlock();
+        }
+    }
+
     // Check screen off time (22h-5h)
     bool wasScreenOff = screenOff;
     screenOff = isScreenOffTime();
