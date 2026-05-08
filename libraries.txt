@@ -8,11 +8,21 @@ U8g2
 ArduinoJson
 
 # Circuit Playground Express
-Adafruit_CircuitPlayground
+Adafruit Circuit Playground
 
 # Écran TFT (ESP32-2432S028 / Cheap Yellow Display)
 TFT_eSPI
 XPT2046_Touchscreen
+
+# Shield TFT 3.5" parallèle 8-bit (UNO R3)
+MCUFRIEND_kbv
+Adafruit GFX Library
+
+# Texte défilant matrice LED (UNO R4 WiFi)
+ArduinoGraphics
+
+# TFT générique haute perf (ESP32, RP2040...)
+LovyanGFX
 
 # MQTT
 PubSubClient

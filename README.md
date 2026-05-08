@@ -36,17 +36,31 @@ ln -s /chemin/absolu/vers/sketches/common/credentials.h credentials.h
 ```
 sketches/
 ├── common/                      # Fichiers partagés (credentials.h)
-├── CircuitPlayground-Express/   # Carte Adafruit
-├── HW-364B/                     # ESP8266 + OLED
-└── XIAO-ESP32-C6/               # Carte Seeed Studio
+├── CircuitPlayground-Express/   # Adafruit (LEDs, accel, micro, capteur temp, capacitif)
+├── D1-R32/                      # WEMOS D1 R32 (ESP32 format UNO)
+├── ESP32-2432S028/              # Cheap Yellow Display (TFT 320×240)
+├── ESP32-4848S040/              # Guition (écran tactile 4" 480×480 + 3 relais)
+├── HW-364B/                     # ESP8266 + OLED bicolore intégré
+├── JC3248W535C/                 # ESP32-S3 + LCD tactile 3.5"
+├── NodeMCU/                     # NodeMCU ESP8266
+├── UNO-R3/                      # Arduino UNO R3 classique
+├── UNO-R4-WiFi/                 # Arduino UNO R4 WiFi (Renesas + ESP32-S3)
+└── XIAO-ESP32-C6/               # Seeed Studio
 ```
 
 ## Cartes supportées
 
 | Carte | FQBN |
 |-------|------|
+| Arduino UNO R3 | `arduino:avr:uno` |
+| Arduino UNO R4 WiFi | `arduino:renesas_uno:unor4wifi` |
 | Circuit Playground Express | `adafruit:samd:adafruit_circuitplayground_m0` |
+| ESP32-2432S028 (Cheap Yellow Display) | `esp32:esp32:esp32` |
+| ESP32-4848S040 (Guition 4" 480×480) | PlatformIO `esp32-s3-devkitm-1` |
 | HW-364B (ESP8266 + OLED) | `esp8266:esp8266:nodemcuv2` |
+| JC3248W535C (ESP32-S3 + LCD tactile) | `esp32:esp32:esp32s3` |
+| NodeMCU (ESP8266) | `esp8266:esp8266:nodemcuv2` |
+| WEMOS D1 R32 (ESP32 format UNO) | `esp32:esp32:d1_uno32` |
 | XIAO ESP32-C6 | `esp32:esp32:XIAO_ESP32C6` |
 
 ## Utilisation

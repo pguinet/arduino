@@ -87,13 +87,118 @@ ln -s /chemin/absolu/vers/sketches/common/credentials.h credentials.h
 
 | Carte | FQBN |
 |-------|------|
+| Arduino UNO R3 | `arduino:avr:uno` |
+| Arduino UNO R4 WiFi | `arduino:renesas_uno:unor4wifi` |
 | Circuit Playground Express | `adafruit:samd:adafruit_circuitplayground_m0` |
 | ESP32-4848S040 (Guition 4" 480×480) | PlatformIO `esp32-s3-devkitm-1` |
 | ESP32-2432S028 (Cheap Yellow Display) | `esp32:esp32:esp32` |
 | HW-364B (ESP8266 + OLED) | `esp8266:esp8266:nodemcuv2` |
 | NodeMCU (ESP8266) | `esp8266:esp8266:nodemcuv2` |
 | JC3248W535C (ESP32-S3 + LCD tactile) | `esp32:esp32:esp32s3` |
+| WEMOS D1 R32 (ESP32 format UNO) | `esp32:esp32:d1_uno32` |
 | XIAO ESP32-C6 | `esp32:esp32:XIAO_ESP32C6` |
+
+## Arduino UNO R3
+
+Carte classique avec ATmega328P (8 bits, 16 MHz, 32 KB Flash, 2 KB SRAM).
+
+**USB** : ATmega16U2 → port `/dev/ttyACM0`
+
+**LED intégrée** : pin 13 (`LED_BUILTIN`)
+
+**Compatibilité shields** : tous les shields Arduino UNO classiques (TFT 3.5" parallèle 8-bit, etc.).
+
+**Compilation/Upload** :
+```bash
+./bin/arduino-cli compile --fqbn arduino:avr:uno sketches/UNO-R3/<projet>/<projet>.ino
+./bin/arduino-cli upload --fqbn arduino:avr:uno --port /dev/ttyACM0 sketches/UNO-R3/<projet>/<projet>.ino
+```
+
+**Sketches disponibles** :
+- `Morse_SOS/` - Clignote SOS en code morse sur la LED intégrée
+- `TFT_Demo/` - Démo shield TFT 3.5" (auto-détection contrôleur via MCUFRIEND_kbv, formes, texte, couleurs)
+
+## Arduino UNO R4 WiFi
+
+Carte format UNO avec deux MCU :
+- **Renesas RA4M1** (Cortex-M4 32-bit, 48 MHz, Flash 256 KB, SRAM 32 KB) — MCU principal
+- **ESP32-S3** — gère l'USB, le WiFi/Bluetooth et expose une interface CMSIS-DAP HID
+
+Matrice LED 12×8 intégrée + connecteur Qwiic.
+
+**USB** : USB natif via ESP32-S3, port `/dev/ttyACM0`. La carte se présente comme "Arduino UNO WiFi R4 CMSIS-DAP" (PID 0x1002 en mode normal, 0x006D en bootloader DFU après 1200bps touch).
+
+### ⚠️ Fix Linux : désactiver ModemManager avant l'upload
+
+Sur Linux, **ModemManager probe les ports série au branchement et empêche le 1200bps touch d'aboutir**. Symptôme : `arduino-cli upload` échoue avec "No device found on ttyACM0", la carte ne passe jamais en mode DFU (PID reste à 0x1002), et le double-tap reset n'apparaît pas non plus côté USB.
+
+**Solution** : arrêter ModemManager avant l'upload (à refaire à chaque session si non masqué) :
+```bash
+sudo systemctl stop ModemManager
+```
+
+Pour le rendre permanent (déconseillé si tu utilises de vrais modems USB) :
+```bash
+sudo systemctl mask ModemManager
+```
+
+**Compilation/Upload** :
+```bash
+./bin/arduino-cli compile --fqbn arduino:renesas_uno:unor4wifi sketches/UNO-R4-WiFi/<projet>/<projet>.ino
+./bin/arduino-cli upload --fqbn arduino:renesas_uno:unor4wifi --port /dev/ttyACM0 sketches/UNO-R4-WiFi/<projet>/<projet>.ino
+```
+
+**Bibliothèques** : Arduino_LED_Matrix (intégré au core), ArduinoGraphics (texte défilant)
+
+**Sketches disponibles** :
+- `LED_Matrix_Demo/` - Texte défilant + cœur qui bat + animation chargement sur la matrice 12×8
+
+## WEMOS D1 R32
+
+Carte ESP32 au format Arduino UNO (compatible shields physiquement). Vendeur : LOLIN/WEMOS.
+
+**MCU** : ESP32 (dual-core Xtensa LX6 240 MHz, WiFi 2.4 GHz, BT classic + BLE, Flash 4 MB)
+
+**USB** : convertisseur CH340 → port `/dev/ttyUSB0`
+
+**LED intégrée** : rouge sur GPIO 2 (la bleue est l'alimentation, toujours allumée)
+
+### ⚠️ Limitation des broches analogiques
+
+Sur la variante standard, les broches analogiques A2-A5 sont mappées sur des GPIO ESP32 **input-only** (35/34/36/39). Cela rend incompatibles certains shields qui s'attendent à pouvoir piloter ces broches en sortie — notamment les shields TFT 3.5" parallèle dont les pins RS/CS/RST tombent sur A2/A3/A4 et ne fonctionnent pas sans modification hardware (jumpers vers d'autres GPIO).
+
+**Mapping UNO → ESP32 GPIO** (variante standard) :
+| Pin UNO | ESP32 GPIO | Note |
+|---------|-----------|------|
+| D2 | 26 | |
+| D3 | 25 | |
+| D4 | 17 | |
+| D5 | 16 | |
+| D6 | 27 | |
+| D7 | 14 | |
+| D8 | 12 | |
+| D9 | 13 | |
+| D10 (SS) | 5 | |
+| D11 (MOSI) | 23 | |
+| D12 (MISO) | 19 | |
+| D13 (SCK) | 18 | |
+| A0 | 2 | |
+| A1 | 4 | |
+| A2 | 35 | input only |
+| A3 | 34 | input only |
+| A4 | 36 | input only |
+| A5 | 39 | input only |
+
+**Compilation/Upload** :
+```bash
+./bin/arduino-cli compile --fqbn esp32:esp32:d1_uno32 sketches/D1-R32/<projet>/<projet>.ino
+./bin/arduino-cli upload --fqbn esp32:esp32:d1_uno32 --port /dev/ttyUSB0 sketches/D1-R32/<projet>/<projet>.ino
+```
+
+**Sketches disponibles** :
+- `Web_Server/` - Petit serveur HTTP avec contrôle LED + infos système (uptime, RSSI, IP, MAC, heap)
+- `NTP_Clock/` - Horloge NTP affichée sur moniteur série, fuseau Europe/Paris avec heure d'été
+- `TFT_Shield_Test/` - Test shield TFT 3.5" (échec attendu : pins RS/CS/RST sur GPIO input-only, voir limitation ci-dessus)
 
 ## Circuit Playground Express
 
