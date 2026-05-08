@@ -15,7 +15,6 @@ void setup() {
   CircuitPlayground.begin();
   CircuitPlayground.setBrightness(30);
   Serial.begin(115200);
-  while (!Serial) delay(10);
   Serial.println("Accelerometre - Circuit Playground Express");
   Serial.println("X\tY\tZ");
 }
