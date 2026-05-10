@@ -16,9 +16,23 @@
 #include <time.h>
 #include <SPI.h>
 #include <TFT_eSPI.h>
+#include <XPT2046_Touchscreen.h>
 #include "credentials.h"
 
 TFT_eSPI tft = TFT_eSPI();
+
+#define TOUCH_CS  33
+#define TOUCH_IRQ 36
+SPIClass touchSPI = SPIClass(VSPI);
+XPT2046_Touchscreen ts(TOUCH_CS, TOUCH_IRQ);
+
+// Calibration approx pour CYD en rotation 1 (landscape)
+#define TOUCH_X_MIN 200
+#define TOUCH_X_MAX 3700
+#define TOUCH_Y_MIN 240
+#define TOUCH_Y_MAX 3800
+
+struct Rect { int x, y, w, h; };
 
 #define COLOR_BG       0x0000   // noir
 #define COLOR_HEADER   0x18C3   // gris foncé
@@ -36,6 +50,29 @@ TFT_eSPI tft = TFT_eSPI();
 const IPAddress INTERNET_TARGET(8, 8, 8, 8);
 
 unsigned long lastBeepMs = 0;
+unsigned long silenceUntilMs = 0;
+bool silencePermanent = false;
+unsigned long lastTapMs = 0;
+
+bool isSilenced() {
+  if (silencePermanent) return true;
+  if (silenceUntilMs > 0 && millis() < silenceUntilMs) return true;
+  return false;
+}
+
+void setSilence5min()      { silenceUntilMs = millis() + 5UL * 60UL * 1000UL; silencePermanent = false; }
+void setSilence30min()     { silenceUntilMs = millis() + 30UL * 60UL * 1000UL; silencePermanent = false; }
+void setSilencePermanent() { silenceUntilMs = 0; silencePermanent = true; }
+void clearSilence()        { silenceUntilMs = 0; silencePermanent = false; }
+
+const Rect btn5min   = {6,   206, 100, 32};
+const Rect btn30min  = {110, 206, 100, 32};
+const Rect btnPerm   = {214, 206, 100, 32};
+const Rect bandeau   = {6,   206, 308, 32};
+
+bool inRect(int x, int y, Rect r) {
+  return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+}
 
 enum State { ST_CHECKING, ST_OK, ST_WIFI_DOWN, ST_LAN_DOWN, ST_INTERNET_DOWN, ST_DNS_DOWN };
 const char* stateNames[] = {"CHECKING", "OK", "WIFI_DOWN", "LAN_DOWN", "INTERNET_DOWN", "DNS_DOWN"};
@@ -121,6 +158,59 @@ void drawCascade() {
 
   drawCascadeRow(94, "DNS ", !dnsDown, !inetDown && !lanDown && wifi_ok,
                  DNS_TARGET, dnsLatency);
+}
+
+void drawButton(Rect r, const char* label, uint16_t color) {
+  tft.fillRoundRect(r.x, r.y, r.w, r.h, 6, color);
+  tft.drawRoundRect(r.x, r.y, r.w, r.h, 6, COLOR_TEXT);
+  tft.setTextColor(COLOR_TEXT, color);
+  tft.setTextDatum(MC_DATUM);
+  tft.drawString(label, r.x + r.w / 2, r.y + r.h / 2, 2);
+}
+
+void drawFooter() {
+  tft.fillRect(0, 200, 320, 40, COLOR_BG);
+  if (isSilenced()) {
+    char buf[64];
+    if (silencePermanent) {
+      snprintf(buf, sizeof(buf), "MUTE permanent - tap pour reactiver");
+    } else {
+      unsigned long left = (silenceUntilMs - millis()) / 1000;
+      snprintf(buf, sizeof(buf), "MUTE %lum%02lus - tap pour reactiver",
+               left / 60, left % 60);
+    }
+    tft.fillRoundRect(bandeau.x, bandeau.y, bandeau.w, bandeau.h, 6, COLOR_HEADER);
+    tft.setTextColor(COLOR_TEXT, COLOR_HEADER);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString(buf, bandeau.x + bandeau.w / 2, bandeau.y + bandeau.h / 2, 2);
+  } else {
+    drawButton(btn5min,  "5min",      COLOR_HEADER);
+    drawButton(btn30min, "30min",     COLOR_HEADER);
+    drawButton(btnPerm,  "Permanent", COLOR_HEADER);
+  }
+}
+
+void mapTouch(int rawX, int rawY, int& sx, int& sy) {
+  sx = map(rawX, TOUCH_X_MIN, TOUCH_X_MAX, 0, 320);
+  sy = map(rawY, TOUCH_Y_MIN, TOUCH_Y_MAX, 0, 240);
+}
+
+void handleTouch() {
+  if (!ts.tirqTouched() || !ts.touched()) return;
+  if (millis() - lastTapMs < 500) return;
+  lastTapMs = millis();
+  TS_Point p = ts.getPoint();
+  int sx, sy;
+  mapTouch(p.x, p.y, sx, sy);
+  Serial.printf("TAP raw=(%d,%d) screen=(%d,%d)\n", p.x, p.y, sx, sy);
+
+  if (isSilenced()) {
+    if (inRect(sx, sy, bandeau)) clearSilence();
+  } else {
+    if      (inRect(sx, sy, btn5min))  setSilence5min();
+    else if (inRect(sx, sy, btn30min)) setSilence30min();
+    else if (inRect(sx, sy, btnPerm))  setSilencePermanent();
+  }
 }
 
 void drawStats() {
@@ -286,6 +376,10 @@ void setup() {
   tft.init();
   tft.setRotation(1);
   tft.fillScreen(COLOR_BG);
+
+  touchSPI.begin(25, 39, 32, TOUCH_CS);
+  ts.begin(touchSPI);
+  ts.setRotation(1);
   tft.setTextColor(COLOR_TEXT, COLOR_BG);
   tft.setTextDatum(TL_DATUM);
   tft.drawString("Internet Monitor", 6, 4, 2);
@@ -323,43 +417,52 @@ void setup() {
   }
 }
 
+unsigned long lastCheckMs = 0;
+
 void loop() {
-  checkCascade();
+  handleTouch();
 
-  bool wasOk = (previousState == ST_OK);
-  bool isOk = (currentState == ST_OK);
+  if (millis() - lastCheckMs >= CHECK_INTERVAL_MS) {
+    lastCheckMs = millis();
+    checkCascade();
 
-  if (wasOk && !isOk) {
-    outageStartEpoch = time(nullptr);
-    outageStartMs = millis();
-    playDownPattern();
-    lastBeepMs = millis();
-    Serial.printf("⚠ Coupure debut a epoch %ld\n", (long)outageStartEpoch);
+    bool wasOk = (previousState == ST_OK);
+    bool isOk = (currentState == ST_OK);
+
+    if (wasOk && !isOk) {
+      outageStartEpoch = time(nullptr);
+      outageStartMs = millis();
+      if (!isSilenced()) playDownPattern();
+      lastBeepMs = millis();
+      Serial.printf("⚠ Coupure debut a epoch %ld\n", (long)outageStartEpoch);
+    }
+    if (!wasOk && isOk && previousState != ST_CHECKING) {
+      lastOutageStartEpoch = outageStartEpoch;
+      lastOutageDurationS = (millis() - outageStartMs) / 1000;
+      totalDowntimeMs += millis() - outageStartMs;
+      playUpPattern();
+      clearSilence();
+      Serial.printf("✓ Retour reseau, coupure de %lus\n", lastOutageDurationS);
+    }
+    previousState = currentState;
+
+    Serial.printf("[%s] RSSI:%d GW:%dms NET:%dms DNS:%dms Uptime:%.2f%% TotalDown:%lus\n",
+      stateNames[currentState], WiFi.RSSI(),
+      gwLatency, inetLatency, dnsLatency,
+      uptimePct(), totalDowntimeMs / 1000);
   }
-  if (!wasOk && isOk && previousState != ST_CHECKING) {
-    lastOutageStartEpoch = outageStartEpoch;
-    lastOutageDurationS = (millis() - outageStartMs) / 1000;
-    totalDowntimeMs += millis() - outageStartMs;
-    playUpPattern();
-    Serial.printf("✓ Retour reseau, coupure de %lus\n", lastOutageDurationS);
-  }
-  previousState = currentState;
 
-  if (currentState != ST_OK && currentState != ST_CHECKING) {
+  if (currentState != ST_OK && currentState != ST_CHECKING && !isSilenced()) {
     if (millis() - lastBeepMs >= BEEP_INTERVAL_MS) {
       playDownPattern();
       lastBeepMs = millis();
     }
   }
 
-  Serial.printf("[%s] RSSI:%d GW:%dms NET:%dms DNS:%dms Uptime:%.2f%% TotalDown:%lus\n",
-    stateNames[currentState], WiFi.RSSI(),
-    gwLatency, inetLatency, dnsLatency,
-    uptimePct(), totalDowntimeMs / 1000);
-
   drawHeader();
   drawCascade();
   drawStats();
+  drawFooter();
 
-  delay(CHECK_INTERVAL_MS);
+  delay(200);
 }
