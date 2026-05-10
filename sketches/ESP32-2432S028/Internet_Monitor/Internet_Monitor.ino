@@ -126,26 +126,30 @@ void drawCascadeRow(int y, const char* label, bool ok, bool checked,
 
   tft.setTextColor(COLOR_TEXT, COLOR_BG);
   tft.setTextDatum(TL_DATUM);
+  tft.setTextPadding(0);
   tft.drawString(label, 6, y, 2);
 
   tft.fillCircle(48, y + 8, 5, dotColor);
 
   tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.setTextPadding(190);  // detail field reserved width (60..250)
   tft.drawString(detail, 60, y, 2);
 
   char buf[16];
-  if (checked && ok) snprintf(buf, sizeof(buf), "%d ms", latency);
-  else snprintf(buf, sizeof(buf), "-");
+  if (checked && ok) {
+    if (latency > 999) snprintf(buf, sizeof(buf), ">999ms");
+    else snprintf(buf, sizeof(buf), "%dms", latency);
+  } else snprintf(buf, sizeof(buf), "-");
   tft.setTextDatum(TR_DATUM);
+  tft.setTextPadding(64);   // latency field reserved width
   tft.drawString(buf, 314, y, 2);
+  tft.setTextPadding(0);
 }
 
 void drawCascade() {
-  tft.fillRect(0, 24, 320, 96, COLOR_BG);
-
   bool wifi_ok = (WiFi.status() == WL_CONNECTED);
   char wifiDet[40];
-  if (wifi_ok) snprintf(wifiDet, sizeof(wifiDet), "%s  %ddBm",
+  if (wifi_ok) snprintf(wifiDet, sizeof(wifiDet), "%s %ddBm",
                         WiFi.SSID().c_str(), WiFi.RSSI());
   else snprintf(wifiDet, sizeof(wifiDet), "disconnected");
   drawCascadeRow(28, "WiFi", wifi_ok && !wifiDown, true, wifiDet, 0);
@@ -168,9 +172,27 @@ void drawButton(Rect r, const char* label, uint16_t color) {
   tft.drawString(label, r.x + r.w / 2, r.y + r.h / 2, 2);
 }
 
+int footerLastMode = -1;  // -1=non draw, 0=boutons, 1=bandeau
+
 void drawFooter() {
-  tft.fillRect(0, 200, 320, 40, COLOR_BG);
-  if (isSilenced()) {
+  bool silenced = isSilenced();
+  int mode = silenced ? 1 : 0;
+
+  // Si transition, repeindre la zone et redessiner les elements stables
+  if (mode != footerLastMode) {
+    tft.fillRect(0, 200, 320, 40, COLOR_BG);
+    if (silenced) {
+      tft.fillRoundRect(bandeau.x, bandeau.y, bandeau.w, bandeau.h, 6, COLOR_HEADER);
+    } else {
+      drawButton(btn5min,  "5min",      COLOR_HEADER);
+      drawButton(btn30min, "30min",     COLOR_HEADER);
+      drawButton(btnPerm,  "Permanent", COLOR_HEADER);
+    }
+    footerLastMode = mode;
+  }
+
+  // En mode bandeau, raffraichir le countdown sans repeindre
+  if (silenced) {
     char buf[64];
     if (silencePermanent) {
       snprintf(buf, sizeof(buf), "MUTE permanent - tap pour reactiver");
@@ -179,14 +201,11 @@ void drawFooter() {
       snprintf(buf, sizeof(buf), "MUTE %lum%02lus - tap pour reactiver",
                left / 60, left % 60);
     }
-    tft.fillRoundRect(bandeau.x, bandeau.y, bandeau.w, bandeau.h, 6, COLOR_HEADER);
     tft.setTextColor(COLOR_TEXT, COLOR_HEADER);
     tft.setTextDatum(MC_DATUM);
+    tft.setTextPadding(300);
     tft.drawString(buf, bandeau.x + bandeau.w / 2, bandeau.y + bandeau.h / 2, 2);
-  } else {
-    drawButton(btn5min,  "5min",      COLOR_HEADER);
-    drawButton(btn30min, "30min",     COLOR_HEADER);
-    drawButton(btnPerm,  "Permanent", COLOR_HEADER);
+    tft.setTextPadding(0);
   }
 }
 
@@ -213,13 +232,15 @@ void handleTouch() {
   }
 }
 
+int graphLastDrawnHead = -1;
+
 void drawStats() {
-  tft.fillRect(0, 120, 320, 80, COLOR_BG);
   tft.setTextColor(COLOR_TEXT, COLOR_BG);
   tft.setTextDatum(TL_DATUM);
 
   char buf[64];
   snprintf(buf, sizeof(buf), "Uptime %.1f%%", uptimePct());
+  tft.setTextPadding(120);
   tft.drawString(buf, 6, 124, 2);
 
   if (lastOutageDurationS > 0) {
@@ -231,11 +252,24 @@ void drawStats() {
   } else {
     snprintf(buf, sizeof(buf), "Aucune coupure");
   }
+  tft.setTextPadding(180);
   tft.drawString(buf, 140, 124, 2);
+  tft.setTextPadding(0);
 
-  // Cadre graphe (zone 6..314 x 148..198)
-  tft.drawRect(6, 148, 308, 50, COLOR_HEADER);
-  int barWidth = 308 / LATENCY_HISTORY_SIZE;  // = 2 px
+  // Cadre graphe (zone 6..314 x 148..198) - dessine une fois
+  static bool graphFrameDrawn = false;
+  if (!graphFrameDrawn) {
+    tft.drawRect(6, 148, 308, 50, COLOR_HEADER);
+    graphFrameDrawn = true;
+  }
+
+  // Redraw du graphe seulement si une nouvelle valeur a ete poussee
+  if (graphLastDrawnHead == latencyHead) return;
+  graphLastDrawnHead = latencyHead;
+
+  // Effacement et redessin complet (1x toutes les 5s a chaque check)
+  tft.fillRect(7, 149, 306, 48, COLOR_BG);
+  int barWidth = 308 / LATENCY_HISTORY_SIZE;
   int graphH = 48;
 
   int maxLat = 50;
@@ -259,33 +293,48 @@ void drawStats() {
   }
 }
 
-void drawHeader() {
-  tft.fillRect(0, 0, 320, 24, COLOR_HEADER);
-  tft.setTextColor(COLOR_TEXT, COLOR_HEADER);
-  tft.setTextDatum(TL_DATUM);
-  tft.drawString("Internet Monitor", 6, 4, 2);
+State headerLastState = ST_CHECKING;
 
+void drawHeader() {
+  static bool headerStaticDrawn = false;
+  if (!headerStaticDrawn) {
+    tft.fillRect(0, 0, 320, 24, COLOR_HEADER);
+    tft.setTextColor(COLOR_TEXT, COLOR_HEADER);
+    tft.setTextDatum(TL_DATUM);
+    tft.drawString("Internet Monitor", 6, 4, 2);
+    headerStaticDrawn = true;
+    headerLastState = ST_CHECKING;  // force badge redraw
+  }
+
+  // Horloge (changement chaque seconde)
   struct tm tm;
   char clock[16] = "--:--:--";
   if (getLocalTime(&tm, 5)) {
     snprintf(clock, sizeof(clock), "%02d:%02d:%02d",
              tm.tm_hour, tm.tm_min, tm.tm_sec);
   }
+  tft.setTextColor(COLOR_TEXT, COLOR_HEADER);
   tft.setTextDatum(TC_DATUM);
+  tft.setTextPadding(80);
   tft.drawString(clock, 200, 4, 2);
+  tft.setTextPadding(0);
 
-  uint16_t color = (currentState == ST_OK) ? COLOR_OK :
-                   (currentState == ST_CHECKING) ? COLOR_UNKNOWN : COLOR_KO;
-  const char* label =
-    (currentState == ST_OK)            ? "OK"   :
-    (currentState == ST_CHECKING)      ? "..."  :
-    (currentState == ST_WIFI_DOWN)     ? "WIFI" :
-    (currentState == ST_LAN_DOWN)      ? "BOX"  :
-    (currentState == ST_INTERNET_DOWN) ? "NET"  : "DNS";
-  tft.fillRoundRect(265, 2, 50, 20, 4, color);
-  tft.setTextColor(COLOR_TEXT, color);
-  tft.setTextDatum(MC_DATUM);
-  tft.drawString(label, 290, 12, 2);
+  // Badge etat - redraw seulement sur changement
+  if (currentState != headerLastState) {
+    uint16_t color = (currentState == ST_OK) ? COLOR_OK :
+                     (currentState == ST_CHECKING) ? COLOR_UNKNOWN : COLOR_KO;
+    const char* label =
+      (currentState == ST_OK)            ? "OK"   :
+      (currentState == ST_CHECKING)      ? "..."  :
+      (currentState == ST_WIFI_DOWN)     ? "WIFI" :
+      (currentState == ST_LAN_DOWN)      ? "BOX"  :
+      (currentState == ST_INTERNET_DOWN) ? "NET"  : "DNS";
+    tft.fillRoundRect(265, 2, 50, 20, 4, color);
+    tft.setTextColor(COLOR_TEXT, color);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString(label, 290, 12, 2);
+    headerLastState = currentState;
+  }
 }
 
 float uptimePct() {
@@ -418,9 +467,17 @@ void setup() {
 }
 
 unsigned long lastCheckMs = 0;
+unsigned long lastUiFastMs = 0;
+unsigned long lastUiSlowMs = 0;
+unsigned long lastNtpSyncMs = 0;
 
 void loop() {
   handleTouch();
+
+  if (millis() - lastNtpSyncMs > 3600UL * 1000UL) {
+    configTzTime(TZ_PARIS, NTP_SERVER);
+    lastNtpSyncMs = millis();
+  }
 
   if (millis() - lastCheckMs >= CHECK_INTERVAL_MS) {
     lastCheckMs = millis();
@@ -459,10 +516,15 @@ void loop() {
     }
   }
 
-  drawHeader();
-  drawCascade();
-  drawStats();
-  drawFooter();
-
-  delay(200);
+  unsigned long now = millis();
+  if (now - lastUiFastMs >= 200) {
+    drawHeader();
+    drawFooter();
+    lastUiFastMs = now;
+  }
+  if (now - lastUiSlowMs >= 1000) {
+    drawCascade();
+    drawStats();
+    lastUiSlowMs = now;
+  }
 }
