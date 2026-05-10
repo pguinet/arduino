@@ -49,6 +49,46 @@ unsigned long outageStartMs = 0;
 time_t lastOutageStartEpoch = 0;
 unsigned long lastOutageDurationS = 0;
 
+void drawCascadeRow(int y, const char* label, bool ok, bool checked,
+                    const char* detail, int latency) {
+  uint16_t dotColor = checked ? (ok ? COLOR_OK : COLOR_KO) : COLOR_UNKNOWN;
+
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.setTextDatum(TL_DATUM);
+  tft.drawString(label, 6, y, 2);
+
+  tft.fillCircle(48, y + 8, 5, dotColor);
+
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.drawString(detail, 60, y, 2);
+
+  char buf[16];
+  if (checked && ok) snprintf(buf, sizeof(buf), "%d ms", latency);
+  else snprintf(buf, sizeof(buf), "-");
+  tft.setTextDatum(TR_DATUM);
+  tft.drawString(buf, 314, y, 2);
+}
+
+void drawCascade() {
+  tft.fillRect(0, 24, 320, 96, COLOR_BG);
+
+  bool wifi_ok = (WiFi.status() == WL_CONNECTED);
+  char wifiDet[40];
+  if (wifi_ok) snprintf(wifiDet, sizeof(wifiDet), "%s  %ddBm",
+                        WiFi.SSID().c_str(), WiFi.RSSI());
+  else snprintf(wifiDet, sizeof(wifiDet), "disconnected");
+  drawCascadeRow(28, "WiFi", wifi_ok && !wifiDown, true, wifiDet, 0);
+
+  String gw = WiFi.gatewayIP().toString();
+  drawCascadeRow(50, "Box ", !lanDown, wifi_ok, gw.c_str(), gwLatency);
+
+  drawCascadeRow(72, "Net ", !inetDown, !lanDown && wifi_ok,
+                 "8.8.8.8", inetLatency);
+
+  drawCascadeRow(94, "DNS ", !dnsDown, !inetDown && !lanDown && wifi_ok,
+                 DNS_TARGET, dnsLatency);
+}
+
 void drawHeader() {
   tft.fillRect(0, 0, 320, 24, COLOR_HEADER);
   tft.setTextColor(COLOR_TEXT, COLOR_HEADER);
@@ -223,6 +263,7 @@ void loop() {
     uptimePct(), totalDowntimeMs / 1000);
 
   drawHeader();
+  drawCascade();
 
   delay(CHECK_INTERVAL_MS);
 }
