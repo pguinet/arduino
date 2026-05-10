@@ -49,6 +49,17 @@ unsigned long outageStartMs = 0;
 time_t lastOutageStartEpoch = 0;
 unsigned long lastOutageDurationS = 0;
 
+#define LATENCY_HISTORY_SIZE 120
+int16_t latencyHistory[LATENCY_HISTORY_SIZE];
+int latencyHead = 0;
+bool latencyFull = false;
+
+void pushLatency(int16_t v) {
+  latencyHistory[latencyHead] = v;
+  latencyHead = (latencyHead + 1) % LATENCY_HISTORY_SIZE;
+  if (latencyHead == 0) latencyFull = true;
+}
+
 void drawCascadeRow(int y, const char* label, bool ok, bool checked,
                     const char* detail, int latency) {
   uint16_t dotColor = checked ? (ok ? COLOR_OK : COLOR_KO) : COLOR_UNKNOWN;
@@ -87,6 +98,52 @@ void drawCascade() {
 
   drawCascadeRow(94, "DNS ", !dnsDown, !inetDown && !lanDown && wifi_ok,
                  DNS_TARGET, dnsLatency);
+}
+
+void drawStats() {
+  tft.fillRect(0, 120, 320, 80, COLOR_BG);
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.setTextDatum(TL_DATUM);
+
+  char buf[64];
+  snprintf(buf, sizeof(buf), "Uptime %.1f%%", uptimePct());
+  tft.drawString(buf, 6, 124, 2);
+
+  if (lastOutageDurationS > 0) {
+    struct tm tm;
+    localtime_r(&lastOutageStartEpoch, &tm);
+    snprintf(buf, sizeof(buf), "Dern: %02d:%02d (%lum%02lus)",
+             tm.tm_hour, tm.tm_min,
+             lastOutageDurationS / 60, lastOutageDurationS % 60);
+  } else {
+    snprintf(buf, sizeof(buf), "Aucune coupure");
+  }
+  tft.drawString(buf, 140, 124, 2);
+
+  // Cadre graphe (zone 6..314 x 148..198)
+  tft.drawRect(6, 148, 308, 50, COLOR_HEADER);
+  int barWidth = 308 / LATENCY_HISTORY_SIZE;  // = 2 px
+  int graphH = 48;
+
+  int maxLat = 50;
+  for (int i = 0; i < LATENCY_HISTORY_SIZE; i++) {
+    if (latencyHistory[i] > maxLat) maxLat = latencyHistory[i];
+  }
+
+  int startIdx = latencyFull ? latencyHead : 0;
+  int count = latencyFull ? LATENCY_HISTORY_SIZE : latencyHead;
+  for (int i = 0; i < count; i++) {
+    int idx = (startIdx + i) % LATENCY_HISTORY_SIZE;
+    int16_t v = latencyHistory[idx];
+    int x = 7 + i * barWidth;
+    if (v < 0) {
+      tft.fillRect(x, 149, barWidth, graphH, COLOR_KO);
+    } else if (v > 0) {
+      int h = (v * graphH) / maxLat;
+      if (h < 1) h = 1;
+      tft.fillRect(x, 149 + (graphH - h), barWidth, h, COLOR_OK);
+    }
+  }
 }
 
 void drawHeader() {
@@ -187,6 +244,9 @@ void checkCascade() {
   else if (inetDown) currentState = ST_INTERNET_DOWN;
   else if (dnsDown) currentState = ST_DNS_DOWN;
   else currentState = ST_OK;
+
+  if (currentState == ST_OK) pushLatency(inetLatency);
+  else pushLatency(-1);
 }
 
 void setup() {
@@ -264,6 +324,7 @@ void loop() {
 
   drawHeader();
   drawCascade();
+  drawStats();
 
   delay(CHECK_INTERVAL_MS);
 }
