@@ -14,7 +14,18 @@
 #include <WiFi.h>
 #include <ESP32Ping.h>
 #include <time.h>
+#include <SPI.h>
+#include <TFT_eSPI.h>
 #include "credentials.h"
+
+TFT_eSPI tft = TFT_eSPI();
+
+#define COLOR_BG       0x0000   // noir
+#define COLOR_HEADER   0x18C3   // gris foncé
+#define COLOR_TEXT     0xFFFF   // blanc
+#define COLOR_OK       0x06A0   // vert
+#define COLOR_KO       0xE186   // rouge
+#define COLOR_UNKNOWN  0x6B4D   // gris
 
 #define CHECK_INTERVAL_MS 5000
 #define DNS_TARGET "cloudflare.com"
@@ -37,6 +48,35 @@ time_t outageStartEpoch = 0;
 unsigned long outageStartMs = 0;
 time_t lastOutageStartEpoch = 0;
 unsigned long lastOutageDurationS = 0;
+
+void drawHeader() {
+  tft.fillRect(0, 0, 320, 24, COLOR_HEADER);
+  tft.setTextColor(COLOR_TEXT, COLOR_HEADER);
+  tft.setTextDatum(TL_DATUM);
+  tft.drawString("Internet Monitor", 6, 4, 2);
+
+  struct tm tm;
+  char clock[16] = "--:--:--";
+  if (getLocalTime(&tm, 5)) {
+    snprintf(clock, sizeof(clock), "%02d:%02d:%02d",
+             tm.tm_hour, tm.tm_min, tm.tm_sec);
+  }
+  tft.setTextDatum(TC_DATUM);
+  tft.drawString(clock, 200, 4, 2);
+
+  uint16_t color = (currentState == ST_OK) ? COLOR_OK :
+                   (currentState == ST_CHECKING) ? COLOR_UNKNOWN : COLOR_KO;
+  const char* label =
+    (currentState == ST_OK)            ? "OK"   :
+    (currentState == ST_CHECKING)      ? "..."  :
+    (currentState == ST_WIFI_DOWN)     ? "WIFI" :
+    (currentState == ST_LAN_DOWN)      ? "BOX"  :
+    (currentState == ST_INTERNET_DOWN) ? "NET"  : "DNS";
+  tft.fillRoundRect(265, 2, 50, 20, 4, color);
+  tft.setTextColor(COLOR_TEXT, color);
+  tft.setTextDatum(MC_DATUM);
+  tft.drawString(label, 290, 12, 2);
+}
 
 float uptimePct() {
   unsigned long now = millis();
@@ -116,6 +156,16 @@ void setup() {
 
   bootMs = millis();
 
+  pinMode(TFT_BL, OUTPUT);
+  digitalWrite(TFT_BL, HIGH);
+  tft.init();
+  tft.setRotation(1);
+  tft.fillScreen(COLOR_BG);
+  tft.setTextColor(COLOR_TEXT, COLOR_BG);
+  tft.setTextDatum(TL_DATUM);
+  tft.drawString("Internet Monitor", 6, 4, 2);
+  tft.drawString("Connecting WiFi...", 6, 30, 2);
+
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   Serial.print("Connecting to WiFi");
@@ -129,6 +179,7 @@ void setup() {
                   WiFi.localIP().toString().c_str(),
                   WiFi.gatewayIP().toString().c_str(),
                   WiFi.RSSI());
+    tft.fillScreen(COLOR_BG);
 
     configTzTime(TZ_PARIS, NTP_SERVER);
     Serial.println("Sync NTP...");
@@ -170,6 +221,8 @@ void loop() {
     stateNames[currentState], WiFi.RSSI(),
     gwLatency, inetLatency, dnsLatency,
     uptimePct(), totalDowntimeMs / 1000);
+
+  drawHeader();
 
   delay(CHECK_INTERVAL_MS);
 }
