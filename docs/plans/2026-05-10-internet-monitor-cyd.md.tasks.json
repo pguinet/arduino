@@ -1,15 +1,18 @@
 {
   "planPath": "docs/plans/2026-05-10-internet-monitor-cyd.md",
   "tasks": [
-    {"id": 1, "subject": "Task 0: Skeleton + connexion WiFi", "status": "pending"},
-    {"id": 2, "subject": "Task 1: Cascade WiFi/LAN/Net/DNS avec hysteresis", "status": "pending", "blockedBy": [1]},
-    {"id": 3, "subject": "Task 2: NTP + tracking durée des coupures", "status": "pending", "blockedBy": [2]},
-    {"id": 4, "subject": "Task 3: Display init + header TFT", "status": "pending", "blockedBy": [3]},
-    {"id": 5, "subject": "Task 4: Cascade panel rendering", "status": "pending", "blockedBy": [4]},
-    {"id": 6, "subject": "Task 5: Stats panel + graphe latence", "status": "pending", "blockedBy": [5]},
-    {"id": 7, "subject": "Task 6: Audio (patterns DOWN + UP + boucle)", "status": "pending", "blockedBy": [6]},
-    {"id": 8, "subject": "Task 7: Tactile + boutons silence", "status": "pending", "blockedBy": [7]},
-    {"id": 9, "subject": "Task 8: Polish + edges + intégration finale", "status": "pending", "blockedBy": [8]}
+    {"id": 1, "subject": "Task 0: Skeleton + connexion WiFi", "status": "completed"},
+    {"id": 2, "subject": "Task 1: Cascade WiFi/LAN/Net/DNS avec hysteresis", "status": "completed", "blockedBy": [1]},
+    {"id": 3, "subject": "Task 2: NTP + tracking durée des coupures", "status": "completed", "blockedBy": [2]},
+    {"id": 4, "subject": "Task 3: Display init + header TFT", "status": "completed", "blockedBy": [3]},
+    {"id": 5, "subject": "Task 4: Cascade panel rendering", "status": "completed", "blockedBy": [4]},
+    {"id": 6, "subject": "Task 5: Stats panel + graphe latence", "status": "completed", "blockedBy": [5]},
+    {"id": 7, "subject": "Task 6: Audio (patterns DOWN + UP + boucle)", "status": "completed", "blockedBy": [6]},
+    {"id": 8, "subject": "Task 7: Tactile + boutons silence", "status": "completed", "blockedBy": [7]},
+    {"id": 9, "subject": "Task 8: Polish + edges + intégration finale", "status": "completed", "blockedBy": [8]},
+    {"id": 10, "subject": "Task 9: Watchdog + heures silencieuses + lune header", "status": "completed"},
+    {"id": 11, "subject": "Task 10: Sound_Test sketch (6 patterns audio)", "status": "completed", "blockedBy": [10]},
+    {"id": 12, "subject": "Task 11: Intégrer le pattern choisi dans Internet_Monitor", "status": "completed", "blockedBy": [11]}
   ],
   "lastUpdated": "2026-05-10T00:00:00Z"
 }
