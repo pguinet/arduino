@@ -28,10 +28,14 @@ TFT_eSPI tft = TFT_eSPI();
 #define COLOR_UNKNOWN  0x6B4D   // gris
 
 #define CHECK_INTERVAL_MS 5000
+#define BEEP_INTERVAL_MS 10000
+#define SPEAKER_PIN 26
 #define DNS_TARGET "cloudflare.com"
 #define NTP_SERVER "pool.ntp.org"
 #define TZ_PARIS "CET-1CEST,M3.5.0,M10.5.0/3"
 const IPAddress INTERNET_TARGET(8, 8, 8, 8);
+
+unsigned long lastBeepMs = 0;
 
 enum State { ST_CHECKING, ST_OK, ST_WIFI_DOWN, ST_LAN_DOWN, ST_INTERNET_DOWN, ST_DNS_DOWN };
 const char* stateNames[] = {"CHECKING", "OK", "WIFI_DOWN", "LAN_DOWN", "INTERNET_DOWN", "DNS_DOWN"};
@@ -58,6 +62,25 @@ void pushLatency(int16_t v) {
   latencyHistory[latencyHead] = v;
   latencyHead = (latencyHead + 1) % LATENCY_HISTORY_SIZE;
   if (latencyHead == 0) latencyFull = true;
+}
+
+void playTone(int freq, int durationMs) {
+  ledcWriteTone(SPEAKER_PIN, freq);
+  delay(durationMs);
+  ledcWriteTone(SPEAKER_PIN, 0);
+}
+
+void playDownPattern() {
+  for (int i = 0; i < 3; i++) {
+    playTone(800, 100);
+    delay(80);
+  }
+}
+
+void playUpPattern() {
+  playTone(600, 100);
+  playTone(800, 100);
+  playTone(1000, 100);
 }
 
 void drawCascadeRow(int y, const char* label, bool ok, bool checked,
@@ -256,6 +279,8 @@ void setup() {
 
   bootMs = millis();
 
+  ledcAttach(SPEAKER_PIN, 1000, 8);
+
   pinMode(TFT_BL, OUTPUT);
   digitalWrite(TFT_BL, HIGH);
   tft.init();
@@ -307,15 +332,25 @@ void loop() {
   if (wasOk && !isOk) {
     outageStartEpoch = time(nullptr);
     outageStartMs = millis();
+    playDownPattern();
+    lastBeepMs = millis();
     Serial.printf("⚠ Coupure debut a epoch %ld\n", (long)outageStartEpoch);
   }
   if (!wasOk && isOk && previousState != ST_CHECKING) {
     lastOutageStartEpoch = outageStartEpoch;
     lastOutageDurationS = (millis() - outageStartMs) / 1000;
     totalDowntimeMs += millis() - outageStartMs;
+    playUpPattern();
     Serial.printf("✓ Retour reseau, coupure de %lus\n", lastOutageDurationS);
   }
   previousState = currentState;
+
+  if (currentState != ST_OK && currentState != ST_CHECKING) {
+    if (millis() - lastBeepMs >= BEEP_INTERVAL_MS) {
+      playDownPattern();
+      lastBeepMs = millis();
+    }
+  }
 
   Serial.printf("[%s] RSSI:%d GW:%dms NET:%dms DNS:%dms Uptime:%.2f%% TotalDown:%lus\n",
     stateNames[currentState], WiFi.RSSI(),
