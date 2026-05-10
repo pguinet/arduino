@@ -124,10 +124,15 @@ void playTone(int freq, int durationMs) {
   ledcWriteTone(SPEAKER_PIN, 0);
 }
 
+// Klaxon descendant : glissando 1500->500 Hz, repete 3 fois
 void playDownPattern() {
-  for (int i = 0; i < 3; i++) {
-    playTone(800, 100);
-    delay(80);
+  for (int rep = 0; rep < 3; rep++) {
+    for (int f = 1500; f >= 500; f -= 50) {
+      ledcWriteTone(SPEAKER_PIN, f);
+      delay(15);
+    }
+    ledcWriteTone(SPEAKER_PIN, 0);
+    delay(150);
   }
 }
 

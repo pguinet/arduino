@@ -467,5 +467,6 @@ cp sketches/ESP32-2432S028/User_Setup.h ~/Arduino/libraries/TFT_eSPI/User_Setup.
 - `Touch_Test/` - Test du tactile avec dessin et palette de couleurs
 - `RGB_LED_Test/` - Test de la LED RGB avec défilement et effet arc-en-ciel
 - `Buzzer_Test/` - Test du speaker GPIO26 (gamme ascendante + thème Mario Bros en boucle)
+- `Sound_Test/` - Comparateur de 6 patterns d'alerte audio (sirène, klaxon, SOS morse, etc.) avec sélection tactile
 - `Internet_Monitor/` - Moniteur connexion en cascade (WiFi/Box/Net/DNS) avec alerte sonore et boutons silence tactiles
 - `Crypto_Tracker/` - Cours des cryptos avec graphique 7j, navigation tactile, rotation auto
