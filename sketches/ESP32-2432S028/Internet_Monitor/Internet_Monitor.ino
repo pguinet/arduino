@@ -47,14 +47,15 @@ struct Rect { int x, y, w, h; };
 #define COLOR_UNKNOWN  0x6B4D   // gris
 
 #define CHECK_INTERVAL_MS 5000
-#define BEEP_INTERVAL_MS 10000
 #define SPEAKER_PIN 26
 #define DNS_TARGET "cloudflare.com"
 #define NTP_SERVER "pool.ntp.org"
 #define TZ_PARIS "CET-1CEST,M3.5.0,M10.5.0/3"
 const IPAddress INTERNET_TARGET(8, 8, 8, 8);
 
-unsigned long lastBeepMs = 0;
+unsigned long alarmNextStepMs = 0;
+int alarmFreqIdx = 0;
+bool alarmIsOn = false;
 unsigned long silenceUntilMs = 0;
 bool silencePermanent = false;
 unsigned long lastTapMs = 0;
@@ -124,15 +125,32 @@ void playTone(int freq, int durationMs) {
   ledcWriteTone(SPEAKER_PIN, 0);
 }
 
-// Klaxon descendant : glissando 1500->500 Hz, repete 3 fois
-void playDownPattern() {
-  for (int rep = 0; rep < 3; rep++) {
-    for (int f = 1500; f >= 500; f -= 50) {
-      ledcWriteTone(SPEAKER_PIN, f);
-      delay(15);
+// Alarme klaxon descendante non-bloquante : glissando 1500->500 Hz
+// puis 150ms de silence, en continu tant que active.
+void tickAlarm(bool active) {
+  if (!active) {
+    if (alarmIsOn) {
+      ledcWriteTone(SPEAKER_PIN, 0);
+      alarmIsOn = false;
+      alarmFreqIdx = 0;
+      alarmNextStepMs = 0;
     }
+    return;
+  }
+  unsigned long now = millis();
+  if (now < alarmNextStepMs) return;
+
+  if (alarmFreqIdx <= 20) {
+    int freq = 1500 - alarmFreqIdx * 50;
+    ledcWriteTone(SPEAKER_PIN, freq);
+    alarmIsOn = true;
+    alarmNextStepMs = now + 15;
+    alarmFreqIdx++;
+  } else {
+    // gap 150ms entre deux glissandos
     ledcWriteTone(SPEAKER_PIN, 0);
-    delay(150);
+    alarmNextStepMs = now + 150;
+    alarmFreqIdx = 0;
   }
 }
 
@@ -538,8 +556,6 @@ void loop() {
     if (wasOk && !isOk) {
       outageStartEpoch = time(nullptr);
       outageStartMs = millis();
-      if (!audioMuted()) playDownPattern();
-      lastBeepMs = millis();
       Serial.printf("⚠ Coupure debut a epoch %ld\n", (long)outageStartEpoch);
     }
     if (!wasOk && isOk && previousState != ST_CHECKING) {
@@ -558,12 +574,8 @@ void loop() {
       uptimePct(), totalDowntimeMs / 1000);
   }
 
-  if (currentState != ST_OK && currentState != ST_CHECKING && !audioMuted()) {
-    if (millis() - lastBeepMs >= BEEP_INTERVAL_MS) {
-      playDownPattern();
-      lastBeepMs = millis();
-    }
-  }
+  bool alarmActive = (currentState != ST_OK && currentState != ST_CHECKING && !audioMuted());
+  tickAlarm(alarmActive);
 
   unsigned long now = millis();
   if (now - lastUiFastMs >= 200) {
