@@ -17,7 +17,12 @@
 #include <SPI.h>
 #include <TFT_eSPI.h>
 #include <XPT2046_Touchscreen.h>
+#include <esp_task_wdt.h>
 #include "credentials.h"
+
+#define WDT_TIMEOUT_S 30
+#define QUIET_START_MIN (21 * 60)        // 21h00
+#define QUIET_END_MIN   (6 * 60 + 30)    // 06h30
 
 TFT_eSPI tft = TFT_eSPI();
 
@@ -58,6 +63,18 @@ bool isSilenced() {
   if (silencePermanent) return true;
   if (silenceUntilMs > 0 && millis() < silenceUntilMs) return true;
   return false;
+}
+
+bool isQuietHours() {
+  struct tm tm;
+  if (!getLocalTime(&tm, 5)) return false;
+  int minutes = tm.tm_hour * 60 + tm.tm_min;
+  // Plage qui traverse minuit
+  return (minutes >= QUIET_START_MIN) || (minutes < QUIET_END_MIN);
+}
+
+bool audioMuted() {
+  return isSilenced() || isQuietHours();
 }
 
 void setSilence5min()      { silenceUntilMs = millis() + 5UL * 60UL * 1000UL; silencePermanent = false; }
@@ -294,6 +311,7 @@ void drawStats() {
 }
 
 State headerLastState = ST_CHECKING;
+int headerLastQuiet = -1;
 
 void drawHeader() {
   static bool headerStaticDrawn = false;
@@ -303,7 +321,22 @@ void drawHeader() {
     tft.setTextDatum(TL_DATUM);
     tft.drawString("Internet Monitor", 6, 4, 2);
     headerStaticDrawn = true;
-    headerLastState = ST_CHECKING;  // force badge redraw
+    headerLastState = ST_CHECKING;
+    headerLastQuiet = -1;
+  }
+
+  // Lune (heures silencieuses) - redraw seulement sur changement
+  int quiet = isQuietHours() ? 1 : 0;
+  if (quiet != headerLastQuiet) {
+    if (quiet) {
+      // Croissant lune jaune sur fond gris header
+      tft.fillCircle(140, 12, 7, TFT_YELLOW);
+      tft.fillCircle(143, 11, 7, COLOR_HEADER);
+    } else {
+      // Effacer la zone lune
+      tft.fillRect(132, 4, 18, 18, COLOR_HEADER);
+    }
+    headerLastQuiet = quiet;
   }
 
   // Horloge (changement chaque seconde)
@@ -418,6 +451,16 @@ void setup() {
 
   bootMs = millis();
 
+  // Watchdog : reboot auto si la loop fige > 30s
+  esp_task_wdt_config_t wdt_config = {
+    .timeout_ms = WDT_TIMEOUT_S * 1000,
+    .idle_core_mask = 0,
+    .trigger_panic = true
+  };
+  esp_task_wdt_deinit();
+  esp_task_wdt_init(&wdt_config);
+  esp_task_wdt_add(NULL);
+
   ledcAttach(SPEAKER_PIN, 1000, 8);
 
   pinMode(TFT_BL, OUTPUT);
@@ -472,6 +515,7 @@ unsigned long lastUiSlowMs = 0;
 unsigned long lastNtpSyncMs = 0;
 
 void loop() {
+  esp_task_wdt_reset();
   handleTouch();
 
   if (millis() - lastNtpSyncMs > 3600UL * 1000UL) {
@@ -489,7 +533,7 @@ void loop() {
     if (wasOk && !isOk) {
       outageStartEpoch = time(nullptr);
       outageStartMs = millis();
-      if (!isSilenced()) playDownPattern();
+      if (!audioMuted()) playDownPattern();
       lastBeepMs = millis();
       Serial.printf("⚠ Coupure debut a epoch %ld\n", (long)outageStartEpoch);
     }
@@ -497,7 +541,7 @@ void loop() {
       lastOutageStartEpoch = outageStartEpoch;
       lastOutageDurationS = (millis() - outageStartMs) / 1000;
       totalDowntimeMs += millis() - outageStartMs;
-      playUpPattern();
+      if (!isQuietHours()) playUpPattern();
       clearSilence();
       Serial.printf("✓ Retour reseau, coupure de %lus\n", lastOutageDurationS);
     }
@@ -509,7 +553,7 @@ void loop() {
       uptimePct(), totalDowntimeMs / 1000);
   }
 
-  if (currentState != ST_OK && currentState != ST_CHECKING && !isSilenced()) {
+  if (currentState != ST_OK && currentState != ST_CHECKING && !audioMuted()) {
     if (millis() - lastBeepMs >= BEEP_INTERVAL_MS) {
       playDownPattern();
       lastBeepMs = millis();
