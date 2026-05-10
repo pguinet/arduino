@@ -394,6 +394,7 @@ pio device monitor                   # Monitor série
 ```
 
 **Sketches disponibles** :
+- `Display_Test/` - Test écran ST7701S 480×480 (couleurs, dégradé, texte 4 tailles, formes)
 - `System_Dashboard/` - Dashboard système avec jauges RAM/PSRAM, WiFi, contrôle 3 relais tactile
 - `HA_Wall_Panel/` - Panneau mural Home Assistant : lumières + 3 relais via MQTT Discovery
 - `Bus_Tracker/` - Suivi des bus via API PRIM Île-de-France Mobilités
