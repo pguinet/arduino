@@ -26,3 +26,7 @@ LovyanGFX
 
 # MQTT
 PubSubClient
+
+# Ping ESP32 (NON PRESENT DANS L'INDEX OFFICIEL — installer via git)
+# ./bin/arduino-cli lib install --git-url https://github.com/marian-craciunescu/ESP32Ping.git
+# ESP32Ping
