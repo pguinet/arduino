@@ -244,11 +244,9 @@ static void fetchDepartures()
 
                 if (!error) {
                     JsonArray visits = doc["Siri"]["ServiceDelivery"]["StopMonitoringDelivery"][0]["MonitoredStopVisit"];
-                    Serial.printf("Visits array size: %d\n", (int)visits.size());
 
                     departureCount = 0;
                     time_t now = time(nullptr);
-                    int skipped_noexp = 0, skipped_parse = 0, skipped_past = 0;
 
                     for (JsonObject visit : visits) {
                         if (departureCount >= MAX_DEPARTURES) break;
@@ -267,13 +265,13 @@ static void fetchDepartures()
                                              | call["ArrivalPlatformName"]["value"];
                         bool atStop = call["VehicleAtStop"] | false;
 
-                        if (!expectedTime) { skipped_noexp++; continue; }
+                        if (!expectedTime) continue;
 
                         time_t depTime = parseIso8601(expectedTime);
-                        if (depTime == 0) { skipped_parse++; continue; }
+                        if (depTime == 0) continue;
 
                         int minutes = (depTime - now) / 60;
-                        if (minutes < -1) { skipped_past++; continue; }
+                        if (minutes < -1) continue;  // Trains depasses
 
                         Departure& d = departures[departureCount];
                         d.minutesLeft = minutes;
@@ -334,14 +332,8 @@ static void fetchDepartures()
                             d.platform[0] = '\0';
                         }
 
-                        Serial.printf("  Train %d: line=%s mission=%s heure=%s dest=%s quai=%s min=%d\n",
-                            departureCount, d.lineName, d.mission, d.timeStr, d.destination, d.platform, d.minutesLeft);
-
                         departureCount++;
                     }
-
-                    Serial.printf("Parsed %d departures (skipped: noexp=%d parse=%d past=%d)\n",
-                        departureCount, skipped_noexp, skipped_parse, skipped_past);
 
                     dataValid = true;
                     strcpy(errorMsg, "");
