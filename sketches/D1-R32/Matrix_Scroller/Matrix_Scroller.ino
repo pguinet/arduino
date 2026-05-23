@@ -18,6 +18,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <time.h>
+#include <Preferences.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_NeoMatrix.h>
 #include <Adafruit_NeoPixel.h>
@@ -34,12 +35,37 @@ Adafruit_NeoMatrix matrix(MAT_WIDTH, MAT_HEIGHT, LED_PIN,
   NEO_GRB + NEO_KHZ800);
 
 WebServer server(80);
+Preferences prefs;
 
 String   userText      = "Bonjour Club Domontois !";
 uint8_t  brightness    = 30;            // 0-255 (limite la conso !)
 uint16_t scrollMs      = 70;            // delai entre deux deplacements d'1 px
 uint8_t  colR = 255, colG = 140, colB = 0;  // orange par defaut
 uint16_t timeIntervalS = 30;            // 0 = ne pas afficher l'heure
+
+void loadPrefs() {
+  prefs.begin("matrix", true);  // read-only
+  userText      = prefs.getString("text",     userText);
+  brightness    = prefs.getUChar ("bright",   brightness);
+  scrollMs      = prefs.getUShort("scroll",   scrollMs);
+  colR          = prefs.getUChar ("colR",     colR);
+  colG          = prefs.getUChar ("colG",     colG);
+  colB          = prefs.getUChar ("colB",     colB);
+  timeIntervalS = prefs.getUShort("interval", timeIntervalS);
+  prefs.end();
+}
+
+void savePrefs() {
+  prefs.begin("matrix", false);  // read-write
+  prefs.putString("text",     userText);
+  prefs.putUChar ("bright",   brightness);
+  prefs.putUShort("scroll",   scrollMs);
+  prefs.putUChar ("colR",     colR);
+  prefs.putUChar ("colG",     colG);
+  prefs.putUChar ("colB",     colB);
+  prefs.putUShort("interval", timeIntervalS);
+  prefs.end();
+}
 
 const char* JOURS[] = {"Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"};
 const char* MOIS[]  = {"jan", "fev", "mars", "avril", "mai", "juin",
@@ -162,6 +188,7 @@ void handleSet() {
   if (server.hasArg("i")) {
     timeIntervalS = constrain(server.arg("i").toInt(), 0, 300);
   }
+  savePrefs();
   server.sendHeader("Location", "/");
   server.send(303);
 }
@@ -171,6 +198,9 @@ void setup() {
   delay(300);
   Serial.println();
   Serial.println("=== Matrix Scroller - D1 R32 ===");
+
+  loadPrefs();
+  currentText = userText;
 
   matrix.begin();
   matrix.setBrightness(brightness);
