@@ -86,8 +86,8 @@ struct LineInfo {
 
 static const LineInfo lineInfos[] = {
     // Bus locaux
-    {"C01252", "269",   COLOR_BUS_BADGE, 0x000000},
-    {"C02462", "1517",  COLOR_BUS_BADGE, 0x000000},
+    {"C01252", "269",   0xFF5A00, 0x000000},  // orange
+    {"C02462", "1517",  0x8D653D, 0xFFFFFF},  // marron
     // Transilien
     {"C01737", "H",     0x6E1E78, 0xFFFFFF},
     {"C01739", "J",     0xCD8B00, 0xFFFFFF},
