@@ -189,6 +189,18 @@ Sur la variante standard, les broches analogiques A2-A5 sont mappées sur des GP
 | A4 | 36 | input only |
 | A5 | 39 | input only |
 
+### ⚠️ WS2812B + WiFi : level shifter obligatoire pour les grandes bandes
+
+L'ESP32 sort sa data en 3.3 V, mais les WS2812B veulent un VIH ≥ 0.7 × VDD = 3.5 V. Ça marche en conditions calmes (cf. `Matrix_Scroller` qui s'affiche correctement sans WiFi actif), mais dès que le WiFi devient actif les perturbations EM et le ripple sur l'alim ESP32 grignotent la marge de bruit → flickering massif ("sapin de Noël" : pixels parasites random + texte qui clignote entier).
+
+**Symptôme** : flicker absent avec un sketch sans WiFi, présent dès que WiFi est connecté. Empire avec le nombre de LEDs (constaté à 600 LEDs, mais peut apparaître bien avant).
+
+**Les fixes software ne suffisent pas** : `WiFi.setSleep(false)`, FastLED (RMT ou I2S), bump de priorité loop task — au mieux ça atténue, jamais ça ne résout. Le problème est physique.
+
+**Fix hardware** :
+- **Diode 1N4001** en série sur le V+ des LEDs (drop ~0.7 V → VDD ≈ 4.3 V → seuil VIH descend à 3.0 V). Essai à 5 centimes.
+- **Level shifter 74AHCT125** (ou 74HCT245) entre GPIO data et DIN du premier pixel. La vraie solution Adafruit. Composant à ~1 €.
+
 **Compilation/Upload** :
 ```bash
 ./bin/arduino-cli compile --fqbn esp32:esp32:d1_uno32 sketches/D1-R32/<projet>/<projet>.ino
@@ -199,6 +211,7 @@ Sur la variante standard, les broches analogiques A2-A5 sont mappées sur des GP
 - `Web_Server/` - Petit serveur HTTP avec contrôle LED + infos système (uptime, RSSI, IP, MAC, heap)
 - `NTP_Clock/` - Horloge NTP affichée sur moniteur série, fuseau Europe/Paris avec heure d'été
 - `TFT_Shield_Test/` - Test shield TFT 3.5" (échec attendu : pins RS/CS/RST sur GPIO input-only, voir limitation ci-dessus)
+- `Matrix_Scroller/` - Texte défilant sur matrice WS2812B 60×10 (serpentin) avec config web (texte, couleur, luminosité, vitesse, intervalle NTP). Nécessite level shifter 3.3 V → 5 V (voir gotcha ci-dessus)
 
 ## Circuit Playground Express
 
