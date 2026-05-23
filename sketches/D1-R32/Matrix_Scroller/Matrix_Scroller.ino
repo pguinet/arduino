@@ -190,6 +190,28 @@ void setup() {
   Serial.print("Connecte. Ouvre : http://");
   Serial.println(WiFi.localIP());
 
+  // Affiche IP + port pendant ~5s au boot. L'IP complete tient pas sur 60 px
+  // en font 5x7, alors on alterne 3 ecrans centres : IP partie 1, partie 2, port.
+  matrix.setTextColor(matrix.Color(0, 200, 100));
+  String ipStr = WiFi.localIP().toString();
+  int dot2 = ipStr.indexOf('.', ipStr.indexOf('.') + 1);  // 2eme point
+  String screens[3] = {
+    ipStr.substring(0, dot2),       // "192.168"
+    ipStr.substring(dot2 + 1),      // "0.214"
+    "Port 80"
+  };
+  const uint16_t durations[3] = {1700, 1700, 1600};
+  for (int i = 0; i < 3; i++) {
+    matrix.fillScreen(0);
+    int textW = screens[i].length() * 6;
+    matrix.setCursor((MAT_WIDTH - textW) / 2, 1);
+    matrix.print(screens[i]);
+    matrix.show();
+    delay(durations[i]);
+  }
+  matrix.fillScreen(0);
+  matrix.show();
+
   // Sync NTP (Europe/Paris)
   configTime(0, 0, "pool.ntp.org", "time.google.com", "fr.pool.ntp.org");
   setenv("TZ", TZ_PARIS, 1);
