@@ -70,7 +70,7 @@ struct StopConfig {
 static StopConfig stops[MAX_STOPS] = {
     {TYPE_BUS,   "STIF%3AStopPoint%3AQ%3A413248%3A", "Foch",   false},
     {TYPE_BUS,   "STIF%3AStopPoint%3AQ%3A14305%3A",  "Eglise", true},
-    {TYPE_TRAIN, "STIF%3AStopArea%3ASP%3A43120%3A",  "Domont", true},
+    {TYPE_TRAIN, "STIF%3AStopArea%3ASP%3A43073%3A",  "Ecouen", true},
 };
 
 static int currentStop = 0;
