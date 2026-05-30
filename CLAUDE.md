@@ -345,9 +345,9 @@ pio device monitor                   # Monitor série
 - `TouchTest/` - Test du tactile avec affichage des coordonnées en temps réel
 - `System_Monitor/` - Dashboard système avec jauges RAM, PSRAM, uptime
 - `WiFi_Scanner/` - Scanner WiFi avec liste tactile et signal coloré
-- `Bus_Tracker/` - Suivi des bus via API PRIM Île-de-France Mobilités
-- `Train_Tracker/` - Prochains départs d'une gare Transilien/RER (ligne, mission, voie, retard) via API PRIM. Gare en dur (STATION_ID dans `main.cpp`, format StopArea PRIM)
-- `Transit_Tracker/` - Fusion Bus + Train avec onglets (Foch, Eglise, Domont). Type `TYPE_BUS`/`TYPE_TRAIN` dans `stops[]` détermine le MonitoringRef (StopPoint:Q vs StopArea:SP) et les champs parsés (mission/voie/retard pour trains)
+- `Bus_Tracker/` - ⚠️ **DÉPRÉCIÉ** → utiliser `Transit_Tracker/` (qui fait bus + train). Suivi des bus via API PRIM Île-de-France Mobilités
+- `Train_Tracker/` - ⚠️ **DÉPRÉCIÉ** → utiliser `Transit_Tracker/` (qui fait bus + train). Prochains départs d'une gare Transilien/RER (ligne, mission, voie, retard) via API PRIM. Gare en dur (STATION_ID dans `main.cpp`, format StopArea PRIM)
+- `Transit_Tracker/` - **(recommandé)** Fusion Bus + Train avec onglets (Foch, Eglise, Domont). Remplace `Bus_Tracker` et `Train_Tracker`. Type `TYPE_BUS`/`TYPE_TRAIN` dans `stops[]` détermine le MonitoringRef (StopPoint:Q vs StopArea:SP) et les champs parsés (mission/voie/retard pour trains)
 - `SD_Browser/` - Explorateur de carte SD avec infos techniques
 
 ## ESP32-4848S040
