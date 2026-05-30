@@ -7,13 +7,13 @@
  * Board: JC3248W535C (ESP32-S3 + LCD tactile 3.5")
  * FQBN: PlatformIO esp32-s3-devkitc-1
  *
- * @dependencies LVGL 8.3.x, ArduinoJson, WiFi
+ * @dependencies LVGL 8.3.x, ArduinoJson, Arduino-wolfSSL, ESP32-EasyWolfSSL (patchee)
  */
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
-#include <WiFiClientSecure.h>
+#include <WolfSSLClient.h>  // remplace WiFiClientSecure (typedef interne) : TLS 1.3 via wolfSSL pour l'API PRIM
 #include <ArduinoJson.h>
 #include <time.h>
 #include <esp_task_wdt.h>

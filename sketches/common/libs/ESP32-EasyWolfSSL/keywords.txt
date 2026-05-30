@@ -1,0 +1,39 @@
+#######################################
+# Syntax Coloring Map For ESP32-EasyWolfSSL
+#######################################
+
+#######################################
+# Datatypes (KEYWORD1)
+#######################################
+
+WolfSSLClient	KEYWORD1
+WiFiClientSecure	KEYWORD1
+
+#######################################
+# Methods and Functions (KEYWORD2)
+#######################################
+
+connect	KEYWORD2
+write	KEYWORD2
+read	KEYWORD2
+available	KEYWORD2
+stop	KEYWORD2
+connected	KEYWORD2
+peek	KEYWORD2
+setCACert	KEYWORD2
+setCertificate	KEYWORD2
+setPrivateKey	KEYWORD2
+setCACertDer	KEYWORD2
+setCertificateDer	KEYWORD2
+setPrivateKeyDer	KEYWORD2
+setInsecure	KEYWORD2
+setPreSharedKey	KEYWORD2
+getProtocolVersion	KEYWORD2
+getCipherSuite	KEYWORD2
+verify	KEYWORD2
+initialize	KEYWORD2
+setDebug	KEYWORD2
+
+#######################################
+# Constants (LITERAL1)
+#######################################

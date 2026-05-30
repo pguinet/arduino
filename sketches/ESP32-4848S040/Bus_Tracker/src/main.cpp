@@ -7,13 +7,13 @@
  * Board: ESP32-4848S040C_I_Y_3 (Guition 4" 480x480 IPS)
  * FQBN: PlatformIO esp32-s3-devkitm-1
  *
- * @dependencies Arduino_GFX, LVGL 8.4, TAMC_GT911, ArduinoJson
+ * @dependencies Arduino_GFX, LVGL 8.4, TAMC_GT911, ArduinoJson, Arduino-wolfSSL, ESP32-EasyWolfSSL (patchee)
  */
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
-#include <WiFiClientSecure.h>
+#include <WolfSSLClient.h>  // remplace WiFiClientSecure (typedef interne) : TLS 1.3 via wolfSSL pour l'API PRIM
 #include <ArduinoJson.h>
 #include <time.h>
 #include <esp_task_wdt.h>
