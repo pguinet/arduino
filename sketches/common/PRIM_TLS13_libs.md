@@ -56,8 +56,18 @@ branche `release/v5.1` (= IDF 5.1 / arduino 3.0.7).
 docker run --rm --entrypoint /bin/bash \
   -v $PWD:/opt/esp/lib-builder -w /opt/esp/lib-builder \
   espressif/esp32-arduino-lib-builder:release-v5.1 \
-  -lc 'git config --global --add safe.directory "*"; ./build.sh -t esp32s3'
+  -lc 'git config --global --add safe.directory "*"; \
+       git config --global http.version HTTP/1.1; \
+       ./build.sh -t esp32s3'
 ```
+
+> ⚠️ Le `http.version HTTP/1.1` n'est pas cosmétique. Le git 2.34.1 de
+> l'image se fait renvoyer un **HTTP 401 `www-authenticate: Basic realm="GitHub"`**
+> sur les dépôts publics en HTTP/2, alors que `curl` obtient 200 sur la
+> même URL. Sans ce réglage, tous les `git clone`/`fetch` du build
+> échouent sur `could not read Username for 'https://github.com'` et le
+> build s'arrête sur des patches ESP-IDF inapplicables — message d'erreur
+> qui ne pointe pas du tout vers la vraie cause.
 Sortie : `out/tools/esp32-arduino-libs/esp32s3/` (vérifier
 `CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y` dans son `sdkconfig`).
 
