@@ -6,7 +6,9 @@
  * peut etre un bus (StopPoint:Q) ou un train (StopArea:SP).
  *
  * Un onglet Meteo (Open-Meteo, sans cle API) complete l'ensemble, avec
- * un bandeau temperature permanent en haut des onglets transport.
+ * un bandeau temperature permanent en haut des onglets transport. L'ecran
+ * revient de lui-meme aux departs aux heures de pointe et a la meteo le
+ * reste du temps.
  *
  * Board: JC3248W535C (ESP32-S3 + LCD tactile 3.5")
  * FQBN: PlatformIO esp32-s3-devkitc-1
@@ -78,14 +80,13 @@ struct StopConfig {
     StopType    type;
     const char* monitoringRef;   // URL-encoded (ex: STIF%3AStopPoint%3AQ%3A413248%3A)
     const char* name;
-    bool        autoReturn;      // Si true, retourne au stop 0 apres AUTO_RETURN_DELAY
 };
 
 // Configuration des arrets (modifier ici pour ajouter/changer un arret)
 static StopConfig stops[MAX_STOPS] = {
-    {TYPE_BUS,   "STIF%3AStopPoint%3AQ%3A413248%3A", "Foch",   false},
-    {TYPE_BUS,   "STIF%3AStopPoint%3AQ%3A14305%3A",  "Eglise", true},
-    {TYPE_TRAIN, "STIF%3AStopArea%3ASP%3A43073%3A",  "Ecouen", true},
+    {TYPE_BUS,   "STIF%3AStopPoint%3AQ%3A413248%3A", "Foch"},
+    {TYPE_BUS,   "STIF%3AStopPoint%3AQ%3A14305%3A",  "Eglise"},
+    {TYPE_TRAIN, "STIF%3AStopArea%3ASP%3A43073%3A",  "Ecouen"},
 };
 
 static int currentStop = 0;   // arret transport affiche (onglets 0..MAX_STOPS-1)
@@ -390,14 +391,27 @@ static lv_obj_t *label_slot_temp[WEATHER_SLOTS];
 static WiFiClientSecure client;
 static WiFiClientSecure clientWeather;
 
-static unsigned long getUpdateInterval()
+static bool isRushHour()
 {
     time_t now = time(nullptr);
     struct tm* ti = localtime(&now);
     int hour = ti->tm_hour, minute = ti->tm_min;
-    if ((hour == 6 && minute >= 30) || (hour >= 7 && hour < 9))  return INTERVAL_RUSH_HOUR;
-    if (hour >= 17 && hour < 20)                                  return INTERVAL_RUSH_HOUR;
-    return INTERVAL_NORMAL;
+    if ((hour == 6 && minute >= 30) || (hour >= 7 && hour < 9))  return true;
+    if (hour >= 17 && hour < 20)                                  return true;
+    return false;
+}
+
+static unsigned long getUpdateInterval()
+{
+    return isRushHour() ? INTERVAL_RUSH_HOUR : INTERVAL_NORMAL;
+}
+
+// Onglet de repli : les departs aux heures de pointe, la meteo le reste du
+// temps. L'affichage y revient seul apres AUTO_RETURN_DELAY, et bascule aussi
+// quand l'heure change si personne n'a touche l'ecran entre-temps.
+static int defaultTab()
+{
+    return isRushHour() ? 0 : TAB_WEATHER;
 }
 
 static bool isBusNightMode()
@@ -979,13 +993,11 @@ static void btn_stop_cb(lv_event_t *e)
     if (idx == currentTab || fetching) return;
 
     currentTab = idx;
-    if (idx == TAB_WEATHER) {
-        stopSwitchTime = millis();
-    } else {
+    if (idx != TAB_WEATHER) {
         currentStop = idx;
-        stopSwitchTime = stops[idx].autoReturn ? millis() : 0;
         manualRefreshRequested = true;
     }
+    stopSwitchTime = (idx != defaultTab()) ? millis() : 0;
     updateStopButtons();
     uiRefreshRequested = true;
 }
@@ -1337,6 +1349,9 @@ void setup()
 
         if (time(nullptr) >= 1704067200) {
             Serial.println("NTP synced!");
+            currentTab = defaultTab();
+            if (currentTab != TAB_WEATHER) currentStop = currentTab;
+            updateStopButtons();
             fetchWeather();
             fetchDepartures();
             updateUI();
@@ -1399,15 +1414,22 @@ void loop()
     busNightMode = isBusNightMode();
     if (busNightMode != wasBusNight) updateUI();
 
-    // Auto-return a l'onglet 0
-    if (currentTab != 0 && stopSwitchTime > 0) {
-        if (millis() - stopSwitchTime >= AUTO_RETURN_DELAY) {
-            currentTab = 0;
-            currentStop = 0;
-            stopSwitchTime = 0;
-            updateStopButtons();
+    // Retour automatique a l'onglet de repli apres une selection manuelle
+    int fallbackTab = defaultTab();
+    if (stopSwitchTime > 0 && millis() - stopSwitchTime >= AUTO_RETURN_DELAY) {
+        stopSwitchTime = 0;
+    }
+
+    // Hors selection manuelle, l'affichage suit l'onglet de repli : il bascule
+    // donc tout seul a l'entree et a la sortie des heures de pointe.
+    if (stopSwitchTime == 0 && currentTab != fallbackTab) {
+        currentTab = fallbackTab;
+        if (fallbackTab != TAB_WEATHER) {
+            currentStop = fallbackTab;
             manualRefreshRequested = true;
         }
+        updateStopButtons();
+        uiRefreshRequested = true;
     }
 
     if (uiRefreshRequested) {
