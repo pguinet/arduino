@@ -5,6 +5,9 @@
  * Mobilites, regroupes dans une seule app a onglets. Chaque arret
  * peut etre un bus (StopPoint:Q) ou un train (StopArea:SP).
  *
+ * Un onglet Meteo (Open-Meteo, sans cle API) complete l'ensemble, avec
+ * un bandeau temperature permanent en haut des onglets transport.
+ *
  * Board: JC3248W535C (ESP32-S3 + LCD tactile 3.5")
  * FQBN: PlatformIO esp32-s3-devkitc-1
  *
@@ -38,6 +41,15 @@
 #define COLOR_DIMMED    0x888888
 #define COLOR_BUS_BADGE 0x4cc9f0
 
+// Meteo (Open-Meteo : API publique, aucune cle requise)
+#define WEATHER_LAT       "49.021"
+#define WEATHER_LON       "2.363"
+#define WEATHER_CITY      "Ezanville"
+#define WEATHER_INTERVAL  900000UL   // 15 min
+#define WEATHER_RETRY     60000UL    // nouvel essai apres echec
+#define WEATHER_SLOTS     4          // creneaux horaires affiches
+#define WEATHER_SLOT_STEP 3          // heures entre deux creneaux
+
 // Watchdog
 #define WDT_TIMEOUT_SEC     30
 
@@ -57,6 +69,9 @@
 #define MAX_STOPS      3
 #define AUTO_RETURN_DELAY 120000
 
+// Onglets : 0..MAX_STOPS-1 = arrets, MAX_STOPS = meteo
+#define TAB_WEATHER MAX_STOPS
+
 enum StopType { TYPE_BUS, TYPE_TRAIN };
 
 struct StopConfig {
@@ -73,7 +88,8 @@ static StopConfig stops[MAX_STOPS] = {
     {TYPE_TRAIN, "STIF%3AStopArea%3ASP%3A43073%3A",  "Ecouen", true},
 };
 
-static int currentStop = 0;
+static int currentStop = 0;   // arret transport affiche (onglets 0..MAX_STOPS-1)
+static int currentTab = 0;    // onglet actif, TAB_WEATHER pour la meteo
 static unsigned long stopSwitchTime = 0;
 
 // Mapping lignes : codes PRIM -> nom affiche + couleur badge
@@ -120,6 +136,192 @@ static const LineInfo* getLineInfo(const char* lineRef)
     return nullptr;
 }
 
+
+// ---------------------------------------------------------------------------
+// Meteo (Open-Meteo)
+// ---------------------------------------------------------------------------
+
+enum WeatherIconKind {
+    ICON_SUN, ICON_SUN_CLOUD, ICON_CLOUD, ICON_FOG, ICON_RAIN, ICON_SNOW, ICON_STORM
+};
+
+struct WeatherSlot {
+    int             hour;
+    int             temp;
+    WeatherIconKind icon;
+};
+
+static struct {
+    bool            valid;
+    int             temp;
+    int             feels;
+    int             wind;         // km/h
+    int             humidity;     // %
+    int             tempMin;
+    int             tempMax;
+    float           precipSum;    // mm cumules sur la journee
+    WeatherIconKind icon;
+    const char*     desc;
+    WeatherSlot     slots[WEATHER_SLOTS];
+    int             slotCount;
+    char            updateTime[8];
+    char            errorMsg[40];
+} weather = {};
+
+static unsigned long lastWeatherUpdate = 0;
+static bool weatherRequested = false;
+
+// Codes WMO -> pictogramme + libelle. Les libelles sont sans accents : les
+// fontes Montserrat integrees a LVGL ne couvrent que l'ASCII (+ le degre).
+static void weatherFromCode(int code, WeatherIconKind* icon, const char** desc)
+{
+    switch (code) {
+        case 0:  *icon = ICON_SUN;       *desc = "Ensoleille";          break;
+        case 1:  *icon = ICON_SUN_CLOUD; *desc = "Peu nuageux";         break;
+        case 2:  *icon = ICON_SUN_CLOUD; *desc = "Nuages epars";        break;
+        case 3:  *icon = ICON_CLOUD;     *desc = "Couvert";             break;
+        case 45:
+        case 48: *icon = ICON_FOG;       *desc = "Brouillard";          break;
+        case 51:
+        case 53:
+        case 55: *icon = ICON_RAIN;      *desc = "Bruine";              break;
+        case 56:
+        case 57: *icon = ICON_RAIN;      *desc = "Bruine verglacante";  break;
+        case 61: *icon = ICON_RAIN;      *desc = "Pluie faible";        break;
+        case 63: *icon = ICON_RAIN;      *desc = "Pluie";               break;
+        case 65: *icon = ICON_RAIN;      *desc = "Pluie forte";         break;
+        case 66:
+        case 67: *icon = ICON_RAIN;      *desc = "Pluie verglacante";   break;
+        case 71: *icon = ICON_SNOW;      *desc = "Neige faible";        break;
+        case 73: *icon = ICON_SNOW;      *desc = "Neige";               break;
+        case 75: *icon = ICON_SNOW;      *desc = "Neige forte";         break;
+        case 77: *icon = ICON_SNOW;      *desc = "Grains de neige";     break;
+        case 80:
+        case 81: *icon = ICON_RAIN;      *desc = "Averses";             break;
+        case 82: *icon = ICON_RAIN;      *desc = "Fortes averses";      break;
+        case 85:
+        case 86: *icon = ICON_SNOW;      *desc = "Averses de neige";    break;
+        case 95: *icon = ICON_STORM;     *desc = "Orage";               break;
+        case 96:
+        case 99: *icon = ICON_STORM;     *desc = "Orage et grele";      break;
+        default: *icon = ICON_CLOUD;     *desc = "---";                 break;
+    }
+}
+
+// Pictogramme compose de primitives LVGL : aucune fonte d'icones meteo n'est
+// disponible, on assemble donc un soleil, un nuage et 3 gouttes / barres.
+struct WeatherIcon {
+    lv_obj_t* cont;
+    lv_obj_t* sun;
+    lv_obj_t* body;
+    lv_obj_t* puffL;
+    lv_obj_t* puffR;
+    lv_obj_t* bits[3];
+    int       size;
+};
+
+static lv_obj_t* weatherIconPart(lv_obj_t* parent)
+{
+    lv_obj_t* o = lv_obj_create(parent);
+    lv_obj_remove_style_all(o);
+    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(o, LV_RADIUS_CIRCLE, 0);
+    lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+    return o;
+}
+
+static void weatherIconCreate(WeatherIcon* ic, lv_obj_t* parent, int size)
+{
+    ic->size = size;
+
+    ic->cont = lv_obj_create(parent);
+    lv_obj_remove_style_all(ic->cont);
+    lv_obj_set_size(ic->cont, size, size);
+    lv_obj_clear_flag(ic->cont, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Ordre de creation = ordre d'empilement : le soleil passe derriere le nuage
+    ic->sun   = weatherIconPart(ic->cont);
+    ic->body  = weatherIconPart(ic->cont);
+    ic->puffL = weatherIconPart(ic->cont);
+    ic->puffR = weatherIconPart(ic->cont);
+    for (int i = 0; i < 3; i++) ic->bits[i] = weatherIconPart(ic->cont);
+}
+
+static void weatherIconSet(WeatherIcon* ic, WeatherIconKind kind)
+{
+    const int S = ic->size;
+
+    lv_obj_t* parts[] = {ic->sun, ic->body, ic->puffL, ic->puffR,
+                         ic->bits[0], ic->bits[1], ic->bits[2]};
+    for (unsigned i = 0; i < sizeof(parts) / sizeof(parts[0]); i++) {
+        lv_obj_add_flag(parts[i], LV_OBJ_FLAG_HIDDEN);
+    }
+
+    bool wet = (kind == ICON_RAIN || kind == ICON_SNOW || kind == ICON_STORM);
+
+    if (kind == ICON_SUN || kind == ICON_SUN_CLOUD) {
+        bool alone = (kind == ICON_SUN);
+        int d = alone ? (S * 62) / 100 : (S * 42) / 100;
+        lv_obj_set_size(ic->sun, d, d);
+        lv_obj_set_style_bg_color(ic->sun, lv_color_hex(0xFFC93C), 0);
+        lv_obj_align(ic->sun, LV_ALIGN_CENTER,
+                     alone ? 0 : (S * 22) / 100,
+                     alone ? 0 : -(S * 24) / 100);
+        lv_obj_clear_flag(ic->sun, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    if (kind != ICON_SUN && kind != ICON_FOG) {
+        uint32_t col = 0xD8DEE9;
+        if (kind == ICON_CLOUD || kind == ICON_RAIN || kind == ICON_SNOW) col = 0xAEB8C4;
+        if (kind == ICON_STORM) col = 0x6B7683;
+
+        // Les variantes avec precipitations remontent le nuage
+        int cy = wet ? -(S * 12) / 100 : (S * 2) / 100;
+
+        lv_obj_set_size(ic->body, (S * 80) / 100, (S * 30) / 100);
+        lv_obj_align(ic->body, LV_ALIGN_CENTER, 0, cy);
+
+        lv_obj_set_size(ic->puffL, (S * 40) / 100, (S * 40) / 100);
+        lv_obj_align(ic->puffL, LV_ALIGN_CENTER, -(S * 14) / 100, cy - (S * 14) / 100);
+
+        lv_obj_set_size(ic->puffR, (S * 28) / 100, (S * 28) / 100);
+        lv_obj_align(ic->puffR, LV_ALIGN_CENTER, (S * 17) / 100, cy - (S * 13) / 100);
+
+        lv_obj_t* cloud[] = {ic->body, ic->puffL, ic->puffR};
+        for (int i = 0; i < 3; i++) {
+            lv_obj_set_style_bg_color(cloud[i], lv_color_hex(col), 0);
+            lv_obj_clear_flag(cloud[i], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    if (wet) {
+        bool snow = (kind == ICON_SNOW);
+        int w = snow ? LV_MAX(3, (S * 13) / 100) : LV_MAX(2, (S * 8) / 100);
+        int h = snow ? w : LV_MAX(5, (S * 20) / 100);
+        uint32_t col = snow                   ? 0xFFFFFF
+                     : (kind == ICON_STORM)   ? 0xFCA311
+                                              : 0x4CC9F0;
+        const int dx[3] = {-(S * 22) / 100, 0, (S * 22) / 100};
+        for (int i = 0; i < 3; i++) {
+            lv_obj_set_size(ic->bits[i], w, h);
+            lv_obj_set_style_bg_color(ic->bits[i], lv_color_hex(col), 0);
+            lv_obj_align(ic->bits[i], LV_ALIGN_CENTER, dx[i], (S * 28) / 100);
+            lv_obj_clear_flag(ic->bits[i], LV_OBJ_FLAG_HIDDEN);
+        }
+    } else if (kind == ICON_FOG) {
+        int w = (S * 66) / 100;
+        int h = LV_MAX(2, (S * 8) / 100);
+        const int dy[3] = {-(S * 20) / 100, 0, (S * 20) / 100};
+        for (int i = 0; i < 3; i++) {
+            lv_obj_set_size(ic->bits[i], (i == 1) ? w : (w * 80) / 100, h);
+            lv_obj_set_style_bg_color(ic->bits[i], lv_color_hex(0xAEB8C4), 0);
+            lv_obj_align(ic->bits[i], LV_ALIGN_CENTER, 0, dy[i]);
+            lv_obj_clear_flag(ic->bits[i], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
 // Departure data (champs train ignores pour bus)
 struct Departure {
     int       minutesLeft;
@@ -145,6 +347,7 @@ static bool fetching = false;
 static unsigned long fetchStartTime = 0;
 #define FETCH_TIMEOUT_MS 20000
 static bool manualRefreshRequested = false;
+static bool uiRefreshRequested = false;
 static int consecutiveErrors = 0;
 
 // UI elements
@@ -164,7 +367,28 @@ static lv_obj_t *labels_dest[MAX_DEPARTURES];
 static lv_obj_t *labels_right[MAX_DEPARTURES];   // platform (train)
 static lv_obj_t *night_overlay;
 
+// UI meteo
+static lv_obj_t *btn_weather;
+static lv_obj_t *hdr_weather;            // bandeau compact de l'en-tete
+static WeatherIcon hdr_icon;
+static lv_obj_t *label_hdr_temp;
+static lv_obj_t *label_hdr_feels;
+static lv_obj_t *cont_weather;           // panneau de l'onglet dedie
+static WeatherIcon big_icon;
+static lv_obj_t *label_w_desc;
+static lv_obj_t *label_w_temp;
+static lv_obj_t *label_w_feels;
+static lv_obj_t *label_w_minmax;
+static lv_obj_t *label_w_wind;
+static lv_obj_t *label_w_precip;
+static lv_obj_t *label_w_hum;
+static lv_obj_t *slot_cards[WEATHER_SLOTS];
+static WeatherIcon slot_icons[WEATHER_SLOTS];
+static lv_obj_t *label_slot_hour[WEATHER_SLOTS];
+static lv_obj_t *label_slot_temp[WEATHER_SLOTS];
+
 static WiFiClientSecure client;
+static WiFiClientSecure clientWeather;
 
 static unsigned long getUpdateInterval()
 {
@@ -391,6 +615,125 @@ static void fetchDepartures()
     fetching = false;
 }
 
+static void fetchWeather()
+{
+    if (fetching) return;
+    if (WiFi.status() != WL_CONNECTED) {
+        strncpy(weather.errorMsg, "WiFi deconnecte", sizeof(weather.errorMsg) - 1);
+        return;
+    }
+
+    fetching = true;
+    fetchStartTime = millis();
+
+    if (currentTab == TAB_WEATHER) {
+        bsp_display_lock(0);
+        lv_label_set_text(label_status, "Chargement meteo...");
+        lv_obj_clear_flag(spinner, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(btn_refresh, LV_OBJ_FLAG_HIDDEN);
+        bsp_display_unlock();
+    }
+
+    clientWeather.setInsecure();
+    clientWeather.setTimeout(10);
+
+    HTTPClient https;
+    String url = "https://api.open-meteo.com/v1/forecast"
+                 "?latitude=" WEATHER_LAT
+                 "&longitude=" WEATHER_LON
+                 "&current=temperature_2m,apparent_temperature,relative_humidity_2m,"
+                 "weather_code,wind_speed_10m"
+                 "&hourly=temperature_2m,weather_code"
+                 "&daily=temperature_2m_max,temperature_2m_min,precipitation_sum"
+                 "&timezone=Europe%2FParis&forecast_days=2";
+
+    Serial.printf("Fetching meteo: %s\n", url.c_str());
+    https.setTimeout(10000);
+    esp_task_wdt_reset();
+
+    if (https.begin(clientWeather, url)) {
+        https.addHeader("Accept", "application/json");
+
+        int httpCode = https.GET();
+        esp_task_wdt_reset();
+        Serial.printf("Meteo HTTP code: %d\n", httpCode);
+
+        if (httpCode == HTTP_CODE_OK) {
+            String payload = https.getString();
+
+            JsonDocument filter;
+            filter["current"]["temperature_2m"] = true;
+            filter["current"]["apparent_temperature"] = true;
+            filter["current"]["relative_humidity_2m"] = true;
+            filter["current"]["weather_code"] = true;
+            filter["current"]["wind_speed_10m"] = true;
+            filter["hourly"]["temperature_2m"][0] = true;
+            filter["hourly"]["weather_code"][0] = true;
+            filter["daily"]["temperature_2m_max"][0] = true;
+            filter["daily"]["temperature_2m_min"][0] = true;
+            filter["daily"]["precipitation_sum"][0] = true;
+
+            JsonDocument doc;
+            DeserializationError error = deserializeJson(doc, payload,
+                DeserializationOption::Filter(filter));
+            payload = "";
+
+            if (!error) {
+                JsonObject cur = doc["current"];
+                weather.temp     = lroundf(cur["temperature_2m"] | 0.0f);
+                weather.feels    = lroundf(cur["apparent_temperature"] | 0.0f);
+                weather.humidity = cur["relative_humidity_2m"] | 0;
+                weather.wind     = lroundf(cur["wind_speed_10m"] | 0.0f);
+                weatherFromCode(cur["weather_code"] | -1, &weather.icon, &weather.desc);
+
+                JsonObject day = doc["daily"];
+                weather.tempMax   = lroundf(day["temperature_2m_max"][0] | 0.0f);
+                weather.tempMin   = lroundf(day["temperature_2m_min"][0] | 0.0f);
+                weather.precipSum = day["precipitation_sum"][0] | 0.0f;
+
+                // L'API renvoie les heures locales a partir de 00h00 aujourd'hui
+                // (timezone=Europe/Paris) : l'index vaut donc directement l'heure.
+                JsonArray hTemp = doc["hourly"]["temperature_2m"];
+                JsonArray hCode = doc["hourly"]["weather_code"];
+
+                time_t now = time(nullptr);
+                struct tm* ti = localtime(&now);
+
+                weather.slotCount = 0;
+                // Sans heure fiable, l'index horaire n'aurait aucun sens
+                for (int k = 0; k < WEATHER_SLOTS && now >= 1704067200; k++) {
+                    int idx = ti->tm_hour + 1 + k * WEATHER_SLOT_STEP;
+                    if (idx >= (int)hTemp.size()) break;
+
+                    WeatherSlot& sl = weather.slots[weather.slotCount];
+                    const char* ignored;
+                    sl.hour = idx % 24;
+                    sl.temp = lroundf(hTemp[idx] | 0.0f);
+                    weatherFromCode(hCode[idx] | -1, &sl.icon, &ignored);
+                    weather.slotCount++;
+                }
+
+                weather.valid = true;
+                weather.errorMsg[0] = '\0';
+                sprintf(weather.updateTime, "%02d:%02d", ti->tm_hour, ti->tm_min);
+            } else {
+                snprintf(weather.errorMsg, sizeof(weather.errorMsg), "Meteo JSON: %s", error.c_str());
+                weather.valid = false;
+            }
+        } else {
+            snprintf(weather.errorMsg, sizeof(weather.errorMsg), "Meteo HTTP %d", httpCode);
+            weather.valid = false;
+        }
+        https.end();
+    } else {
+        strncpy(weather.errorMsg, "Meteo injoignable", sizeof(weather.errorMsg) - 1);
+        weather.valid = false;
+    }
+
+    lastWeatherUpdate = millis();
+    fetching = false;
+}
+
 static void formatTimeLeft(int minutes, bool atStop, char* out, size_t outSize, lv_color_t* color)
 {
     if (atStop) {
@@ -415,6 +758,74 @@ static void formatTimeLeft(int minutes, bool atStop, char* out, size_t outSize, 
     }
 }
 
+static void updateHeaderWeather()
+{
+    char buf[24];
+
+    if (weather.valid) {
+        weatherIconSet(&hdr_icon, weather.icon);
+        lv_obj_clear_flag(hdr_icon.cont, LV_OBJ_FLAG_HIDDEN);
+        snprintf(buf, sizeof(buf), "%d°", weather.temp);
+        lv_label_set_text(label_hdr_temp, buf);
+        snprintf(buf, sizeof(buf), "ress. %d°", weather.feels);
+        lv_label_set_text(label_hdr_feels, buf);
+    } else {
+        lv_obj_add_flag(hdr_icon.cont, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(label_hdr_temp, "--°");
+        lv_label_set_text(label_hdr_feels, "");
+    }
+}
+
+static void updateWeatherPanel()
+{
+    char buf[32];
+
+    if (!weather.valid) {
+        weatherIconSet(&big_icon, ICON_CLOUD);
+        lv_label_set_text(label_w_desc, weather.errorMsg[0] ? weather.errorMsg : "Indisponible");
+        lv_label_set_text(label_w_temp, "--°C");
+        lv_label_set_text(label_w_feels, "");
+        lv_label_set_text(label_w_minmax, "");
+        lv_label_set_text(label_w_wind, "");
+        lv_label_set_text(label_w_precip, "");
+        lv_label_set_text(label_w_hum, "");
+        for (int i = 0; i < WEATHER_SLOTS; i++) {
+            lv_obj_add_flag(slot_cards[i], LV_OBJ_FLAG_HIDDEN);
+        }
+        return;
+    }
+
+    weatherIconSet(&big_icon, weather.icon);
+    lv_label_set_text(label_w_desc, weather.desc ? weather.desc : "---");
+
+    snprintf(buf, sizeof(buf), "%d°C", weather.temp);
+    lv_label_set_text(label_w_temp, buf);
+    snprintf(buf, sizeof(buf), "ressenti %d°", weather.feels);
+    lv_label_set_text(label_w_feels, buf);
+    snprintf(buf, sizeof(buf), "min %d°   max %d°", weather.tempMin, weather.tempMax);
+    lv_label_set_text(label_w_minmax, buf);
+
+    snprintf(buf, sizeof(buf), "Vent  %d km/h", weather.wind);
+    lv_label_set_text(label_w_wind, buf);
+    snprintf(buf, sizeof(buf), "Pluie  %.1f mm", weather.precipSum);
+    lv_label_set_text(label_w_precip, buf);
+    snprintf(buf, sizeof(buf), "Humidite  %d %%", weather.humidity);
+    lv_label_set_text(label_w_hum, buf);
+
+    for (int i = 0; i < WEATHER_SLOTS; i++) {
+        if (i < weather.slotCount) {
+            snprintf(buf, sizeof(buf), "%dh", weather.slots[i].hour);
+            lv_label_set_text(label_slot_hour[i], buf);
+            snprintf(buf, sizeof(buf), "%d°", weather.slots[i].temp);
+            lv_label_set_text(label_slot_temp[i], buf);
+            weatherIconSet(&slot_icons[i], weather.slots[i].icon);
+            lv_obj_clear_flag(slot_cards[i], LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(slot_cards[i], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
 static void updateUI()
 {
     bsp_display_lock(0);
@@ -422,10 +833,34 @@ static void updateUI()
     lv_obj_add_flag(spinner, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(btn_refresh, LV_OBJ_FLAG_HIDDEN);
 
+    char buf[64];
+    updateHeaderWeather();
+
+    // Onglet meteo : on masque la liste des departs et le bandeau compact
+    if (currentTab == TAB_WEATHER) {
+        lv_obj_add_flag(night_overlay, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(cont_departures, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(hdr_weather, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(cont_weather, LV_OBJ_FLAG_HIDDEN);
+
+        lv_label_set_text(label_stop, LV_SYMBOL_GPS " " WEATHER_CITY);
+        updateWeatherPanel();
+        lv_label_set_text(label_status, weather.valid ? "Open-Meteo" : "Meteo indisponible");
+        snprintf(buf, sizeof(buf), "MAJ: %s",
+                 weather.updateTime[0] ? weather.updateTime : "--:--");
+        lv_label_set_text(label_update_time, buf);
+
+        bsp_display_unlock();
+        return;
+    }
+
+    lv_obj_add_flag(cont_weather, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(cont_departures, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(hdr_weather, LV_OBJ_FLAG_HIDDEN);
+
     StopConfig& stop = stops[currentStop];
 
     // Header
-    char buf[64];
     snprintf(buf, sizeof(buf), LV_SYMBOL_GPS " %s", stop.name);
     lv_label_set_text(label_stop, buf);
 
@@ -508,33 +943,45 @@ static void updateUI()
     bsp_display_unlock();
 }
 
+static void setTabStyle(lv_obj_t* btn, bool active)
+{
+    lv_obj_set_style_bg_color(btn, lv_color_hex(active ? COLOR_ACCENT : COLOR_CARD), 0);
+    lv_obj_set_style_text_color(lv_obj_get_child(btn, 0),
+                                lv_color_hex(active ? 0x000000 : COLOR_TEXT), 0);
+}
+
 static void updateStopButtons()
 {
     bsp_display_lock(0);
     for (int i = 0; i < MAX_STOPS; i++) {
-        if (i == currentStop) {
-            lv_obj_set_style_bg_color(btn_stops[i], lv_color_hex(COLOR_ACCENT), 0);
-        } else {
-            lv_obj_set_style_bg_color(btn_stops[i], lv_color_hex(COLOR_CARD), 0);
-        }
+        setTabStyle(btn_stops[i], currentTab == i);
     }
+    setTabStyle(btn_weather, currentTab == TAB_WEATHER);
     bsp_display_unlock();
 }
 
 static void btn_refresh_cb(lv_event_t *e)
 {
-    if (!fetching) manualRefreshRequested = true;
+    if (fetching) return;
+    if (currentTab == TAB_WEATHER) weatherRequested = true;
+    else                           manualRefreshRequested = true;
 }
 
 static void btn_stop_cb(lv_event_t *e)
 {
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    if (idx == currentStop || fetching) return;
+    if (idx == currentTab || fetching) return;
 
-    currentStop = idx;
-    stopSwitchTime = stops[idx].autoReturn ? millis() : 0;
-    manualRefreshRequested = true;
+    currentTab = idx;
+    if (idx == TAB_WEATHER) {
+        stopSwitchTime = millis();
+    } else {
+        currentStop = idx;
+        stopSwitchTime = stops[idx].autoReturn ? millis() : 0;
+        manualRefreshRequested = true;
+    }
     updateStopButtons();
+    uiRefreshRequested = true;
 }
 
 static void createUI()
@@ -552,21 +999,29 @@ static void createUI()
     lv_obj_set_style_bg_opa(title_bar, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_all(title_bar, 8, 0);
 
-    // Stop buttons (largeur 110, espacement 5)
-    int btnW = 110, btnH = 35;
+    // Onglets : 3 arrets + meteo (4 x 95 + 3 x 5 = 395, le refresh en prend 60)
+    int btnW = 95, btnH = 35;
     for (int i = 0; i < MAX_STOPS; i++) {
         btn_stops[i] = lv_btn_create(title_bar);
         lv_obj_set_size(btn_stops[i], btnW, btnH);
         lv_obj_align(btn_stops[i], LV_ALIGN_LEFT_MID, i * (btnW + 5), 0);
-        lv_obj_set_style_bg_color(btn_stops[i], lv_color_hex(i == 0 ? COLOR_ACCENT : COLOR_CARD), 0);
         lv_obj_add_event_cb(btn_stops[i], btn_stop_cb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
 
         lv_obj_t *lbl = lv_label_create(btn_stops[i]);
         lv_label_set_text(lbl, stops[i].name);
-        lv_obj_set_style_text_color(lbl, lv_color_hex(i == 0 ? 0x000000 : COLOR_TEXT), 0);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, 0);
         lv_obj_center(lbl);
     }
+
+    btn_weather = lv_btn_create(title_bar);
+    lv_obj_set_size(btn_weather, btnW, btnH);
+    lv_obj_align(btn_weather, LV_ALIGN_LEFT_MID, MAX_STOPS * (btnW + 5), 0);
+    lv_obj_add_event_cb(btn_weather, btn_stop_cb, LV_EVENT_CLICKED, (void*)(intptr_t)TAB_WEATHER);
+
+    lv_obj_t *lbl_weather = lv_label_create(btn_weather);
+    lv_label_set_text(lbl_weather, "Meteo");
+    lv_obj_set_style_text_font(lbl_weather, &lv_font_montserrat_16, 0);
+    lv_obj_center(lbl_weather);
 
     // Refresh button
     btn_refresh = lv_btn_create(title_bar);
@@ -590,6 +1045,28 @@ static void createUI()
     lv_obj_set_style_text_color(label_stop, lv_color_hex(COLOR_TEXT), 0);
     lv_obj_set_style_text_font(label_stop, &lv_font_montserrat_18, 0);
     lv_obj_align(label_stop, LV_ALIGN_TOP_LEFT, 15, 55);
+
+    // Bandeau meteo compact, a droite du nom d'arret
+    hdr_weather = lv_obj_create(lv_scr_act());
+    lv_obj_remove_style_all(hdr_weather);
+    lv_obj_set_size(hdr_weather, 220, 26);
+    lv_obj_align(hdr_weather, LV_ALIGN_TOP_RIGHT, -12, 53);
+    lv_obj_set_flex_flow(hdr_weather, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(hdr_weather, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(hdr_weather, 8, 0);
+    lv_obj_clear_flag(hdr_weather, LV_OBJ_FLAG_SCROLLABLE);
+
+    weatherIconCreate(&hdr_icon, hdr_weather, 26);
+
+    label_hdr_temp = lv_label_create(hdr_weather);
+    lv_label_set_text(label_hdr_temp, "--\u00b0");
+    lv_obj_set_style_text_color(label_hdr_temp, lv_color_hex(COLOR_TEXT), 0);
+    lv_obj_set_style_text_font(label_hdr_temp, &lv_font_montserrat_18, 0);
+
+    label_hdr_feels = lv_label_create(hdr_weather);
+    lv_label_set_text(label_hdr_feels, "");
+    lv_obj_set_style_text_color(label_hdr_feels, lv_color_hex(COLOR_DIMMED), 0);
+    lv_obj_set_style_text_font(label_hdr_feels, &lv_font_montserrat_12, 0);
 
     // Container des rows
     cont_departures = lv_obj_create(lv_scr_act());
@@ -662,6 +1139,93 @@ static void createUI()
         lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
     }
 
+    // Panneau meteo (onglet dedie), meme emprise que la liste des departs
+    cont_weather = lv_obj_create(lv_scr_act());
+    lv_obj_remove_style_all(cont_weather);
+    lv_obj_set_size(cont_weather, 470, 215);
+    lv_obj_align(cont_weather, LV_ALIGN_TOP_MID, 0, 80);
+    lv_obj_clear_flag(cont_weather, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(cont_weather, LV_OBJ_FLAG_HIDDEN);
+
+    weatherIconCreate(&big_icon, cont_weather, 78);
+    lv_obj_align(big_icon.cont, LV_ALIGN_TOP_LEFT, 36, 4);
+
+    label_w_desc = lv_label_create(cont_weather);
+    lv_label_set_text(label_w_desc, "---");
+    lv_obj_set_style_text_color(label_w_desc, lv_color_hex(COLOR_TEXT), 0);
+    lv_obj_set_style_text_font(label_w_desc, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_align(label_w_desc, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(label_w_desc, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(label_w_desc, 150);
+    lv_obj_align(label_w_desc, LV_ALIGN_TOP_LEFT, 0, 90);
+
+    label_w_temp = lv_label_create(cont_weather);
+    lv_label_set_text(label_w_temp, "--°C");
+    lv_obj_set_style_text_color(label_w_temp, lv_color_hex(COLOR_ACCENT), 0);
+    lv_obj_set_style_text_font(label_w_temp, &lv_font_montserrat_40, 0);
+    lv_obj_align(label_w_temp, LV_ALIGN_TOP_LEFT, 170, 6);
+
+    label_w_feels = lv_label_create(cont_weather);
+    lv_label_set_text(label_w_feels, "");
+    lv_obj_set_style_text_color(label_w_feels, lv_color_hex(COLOR_DIMMED), 0);
+    lv_obj_set_style_text_font(label_w_feels, &lv_font_montserrat_14, 0);
+    lv_obj_align(label_w_feels, LV_ALIGN_TOP_LEFT, 173, 58);
+
+    label_w_minmax = lv_label_create(cont_weather);
+    lv_label_set_text(label_w_minmax, "");
+    lv_obj_set_style_text_color(label_w_minmax, lv_color_hex(COLOR_TEXT), 0);
+    lv_obj_set_style_text_font(label_w_minmax, &lv_font_montserrat_14, 0);
+    lv_obj_align(label_w_minmax, LV_ALIGN_TOP_LEFT, 173, 80);
+
+    lv_obj_t *detail_labels[3];
+    for (int i = 0; i < 3; i++) {
+        detail_labels[i] = lv_label_create(cont_weather);
+        lv_label_set_text(detail_labels[i], "");
+        lv_obj_set_style_text_color(detail_labels[i], lv_color_hex(COLOR_TEXT), 0);
+        lv_obj_set_style_text_font(detail_labels[i], &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_align(detail_labels[i], LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_align(detail_labels[i], LV_ALIGN_TOP_RIGHT, -6, 10 + i * 28);
+    }
+    label_w_wind   = detail_labels[0];
+    label_w_precip = detail_labels[1];
+    label_w_hum    = detail_labels[2];
+
+    // Creneaux horaires a venir
+    lv_obj_t *slots_row = lv_obj_create(cont_weather);
+    lv_obj_remove_style_all(slots_row);
+    lv_obj_set_size(slots_row, 470, 66);
+    lv_obj_align(slots_row, LV_ALIGN_BOTTOM_MID, 0, -2);
+    lv_obj_set_flex_flow(slots_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(slots_row, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(slots_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    for (int i = 0; i < WEATHER_SLOTS; i++) {
+        lv_obj_t *card = lv_obj_create(slots_row);
+        lv_obj_remove_style_all(card);
+        lv_obj_set_size(card, 104, 64);
+        lv_obj_set_style_bg_color(card, lv_color_hex(COLOR_CARD), 0);
+        lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(card, 6, 0);
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(card, LV_OBJ_FLAG_HIDDEN);
+        slot_cards[i] = card;
+
+        label_slot_hour[i] = lv_label_create(card);
+        lv_label_set_text(label_slot_hour[i], "--h");
+        lv_obj_set_style_text_color(label_slot_hour[i], lv_color_hex(COLOR_DIMMED), 0);
+        lv_obj_set_style_text_font(label_slot_hour[i], &lv_font_montserrat_12, 0);
+        lv_obj_align(label_slot_hour[i], LV_ALIGN_TOP_MID, 0, 3);
+
+        weatherIconCreate(&slot_icons[i], card, 24);
+        lv_obj_align(slot_icons[i].cont, LV_ALIGN_TOP_MID, 0, 17);
+
+        label_slot_temp[i] = lv_label_create(card);
+        lv_label_set_text(label_slot_temp[i], "--°");
+        lv_obj_set_style_text_color(label_slot_temp[i], lv_color_hex(COLOR_TEXT), 0);
+        lv_obj_set_style_text_font(label_slot_temp[i], &lv_font_montserrat_16, 0);
+        lv_obj_align(label_slot_temp[i], LV_ALIGN_BOTTOM_MID, 0, -2);
+    }
+
     // Status bar
     lv_obj_t *status_bar = lv_obj_create(lv_scr_act());
     lv_obj_remove_style_all(status_bar);
@@ -729,6 +1293,7 @@ void setup()
     bsp_display_backlight_on();
 
     createUI();
+    updateStopButtons();
 
     bsp_display_lock(0);
     lv_label_set_text(label_status, "Connexion WiFi...");
@@ -766,6 +1331,7 @@ void setup()
 
         if (time(nullptr) >= 1704067200) {
             Serial.println("NTP synced!");
+            fetchWeather();
             fetchDepartures();
             updateUI();
         } else {
@@ -827,9 +1393,10 @@ void loop()
     busNightMode = isBusNightMode();
     if (busNightMode != wasBusNight) updateUI();
 
-    // Auto-return au stop 0
-    if (currentStop != 0 && stopSwitchTime > 0) {
+    // Auto-return a l'onglet 0
+    if (currentTab != 0 && stopSwitchTime > 0) {
         if (millis() - stopSwitchTime >= AUTO_RETURN_DELAY) {
+            currentTab = 0;
             currentStop = 0;
             stopSwitchTime = 0;
             updateStopButtons();
@@ -837,15 +1404,34 @@ void loop()
         }
     }
 
-    if (manualRefreshRequested && !fetching) {
+    if (uiRefreshRequested) {
+        uiRefreshRequested = false;
+        updateUI();
+    }
+
+    // Meteo : cycle propre, independant du transport. Une seule requete
+    // par tour de boucle pour ne pas cumuler deux timeouts sous le watchdog.
+    bool didFetch = false;
+    unsigned long weatherPeriod = weather.valid ? WEATHER_INTERVAL : WEATHER_RETRY;
+    bool weatherDue = weatherRequested || lastWeatherUpdate == 0
+                      || (millis() - lastWeatherUpdate >= weatherPeriod);
+    if (!fetching && weatherDue && WiFi.status() == WL_CONNECTED) {
+        weatherRequested = false;
+        fetchWeather();
+        updateUI();
+        didFetch = true;
+    }
+
+    if (!didFetch && manualRefreshRequested && !fetching) {
         manualRefreshRequested = false;
         fetchDepartures();
         updateUI();
+        didFetch = true;
     }
 
     // Periodic refresh (skip si stop bus en mode nuit)
     bool inBusNight = (stops[currentStop].type == TYPE_BUS) && busNightMode;
-    if (!fetching && !inBusNight) {
+    if (!didFetch && !fetching && !inBusNight) {
         unsigned long interval = getUpdateInterval();
         if (millis() - lastUpdate >= interval) {
             fetchDepartures();
