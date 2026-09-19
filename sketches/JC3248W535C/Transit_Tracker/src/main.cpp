@@ -653,6 +653,7 @@ static void fetchWeather()
 
     if (https.begin(clientWeather, url)) {
         https.addHeader("Accept", "application/json");
+        https.setReuse(false);
 
         int httpCode = https.GET();
         esp_task_wdt_reset();
@@ -729,6 +730,11 @@ static void fetchWeather()
         strncpy(weather.errorMsg, "Meteo injoignable", sizeof(weather.errorMsg) - 1);
         weather.valid = false;
     }
+
+    // Liberer le contexte TLS : garder la socket ouverte (keep-alive par
+    // defaut dans HTTPClient) laisserait deux sessions mbedTLS vivantes en
+    // RAM interne, et le handshake PRIM echouerait faute de heap.
+    clientWeather.stop();
 
     lastWeatherUpdate = millis();
     fetching = false;
