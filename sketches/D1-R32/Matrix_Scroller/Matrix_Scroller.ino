@@ -5,6 +5,11 @@
  * cablees en serpentin. Le texte, la couleur, la luminosite et la vitesse
  * sont configurables via une interface web.
  *
+ * L'affichage ne depend jamais du reseau : le defilement demarre des le boot,
+ * la connexion WiFi se fait en tache de fond. Sans reseau au bout de 15 s,
+ * la carte ouvre son propre point d'acces avec portail captif pour rester
+ * configurable (cas du forum des associations, sans WiFi sur place).
+ *
  * Cablage suppose : pixel 0 en haut a gauche, premiere ligne va vers la
  * droite, deuxieme vers la gauche, etc. (zigzag par lignes).
  * Si l'affichage est inverse, modifier les flags du constructeur matrix.
@@ -17,6 +22,7 @@
 
 #include <WiFi.h>
 #include <WebServer.h>
+#include <DNSServer.h>
 #include <time.h>
 #include <Preferences.h>
 #include <Adafruit_GFX.h>
@@ -29,12 +35,26 @@
 #define MAT_HEIGHT  10
 #define TZ_PARIS    "CET-1CEST,M3.5.0,M10.5.0/3"
 
+// Delai avant de renoncer au WiFi et d'ouvrir le point d'acces de secours
+#define WIFI_TIMEOUT_MS 15000UL
+// Vitesse de defilement des messages d'info reseau (plus rapide que le texte)
+#define INFO_SCROLL_MS  35
+
+// Point d'acces de secours. Surchargeable dans credentials.h.
+#ifndef AP_SSID
+#define AP_SSID     "Afficheur-CID"
+#endif
+#ifndef AP_PASSWORD
+#define AP_PASSWORD ""   // moins de 8 caracteres = reseau ouvert
+#endif
+
 Adafruit_NeoMatrix matrix(MAT_WIDTH, MAT_HEIGHT, LED_PIN,
   NEO_MATRIX_TOP + NEO_MATRIX_LEFT +
   NEO_MATRIX_ROWS + NEO_MATRIX_ZIGZAG,
   NEO_GRB + NEO_KHZ800);
 
 WebServer server(80);
+DNSServer dnsServer;
 Preferences prefs;
 
 String   userText      = "Bonjour Club Domontois !";
@@ -71,12 +91,31 @@ const char* JOURS[] = {"Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendr
 const char* MOIS[]  = {"jan", "fev", "mars", "avril", "mai", "juin",
                        "juillet", "aout", "sept", "oct", "nov", "dec"};
 
+// Etat du reseau. L'afficheur tourne dans les trois cas.
+enum NetState { NET_CONNECTING, NET_STA, NET_AP };
+NetState      netState     = NET_CONNECTING;
+unsigned long wifiStartMs  = 0;
+bool          serverStarted = false;
+
 // Etat du defilement
 String        currentText  = userText;
 bool          showingTime  = false;
+bool          showingInfo  = false;   // message reseau, passe une seule fois
+String        infoText     = "";
 unsigned long lastTimeShown = 0;
 int           scrollX       = MAT_WIDTH;
 unsigned long lastScroll    = 0;
+
+void queueInfo(const String& s) {
+  infoText = s;
+  Serial.println(s);
+}
+
+bool timeIsSynced() {
+  struct tm t;
+  if (!getLocalTime(&t, 5)) return false;
+  return t.tm_year > (2021 - 1900);  // 1970 tant que NTP n'a pas repondu
+}
 
 String formatTimeString() {
   struct tm t;
@@ -92,15 +131,28 @@ int textPixelWidth(const String& s) {
   return s.length() * 6;  // font 5x7 + 1 px d'espace
 }
 
+String netStatusLine() {
+  switch (netState) {
+    case NET_STA:
+      return String("Connecte a ") + WIFI_SSID + " - " + WiFi.localIP().toString();
+    case NET_AP:
+      return String("Point d'acces ") + AP_SSID + " (pas de WiFi trouve) - " +
+             WiFi.softAPIP().toString();
+    default:
+      return String("Connexion a ") + WIFI_SSID + " en cours...";
+  }
+}
+
 String htmlPage() {
   String s;
-  s.reserve(2500);
+  s.reserve(2700);
   s += F("<!DOCTYPE html><html><head><meta charset='utf-8'>"
          "<meta name='viewport' content='width=device-width,initial-scale=1'>"
          "<title>Matrix Scroller</title><style>"
          "body{font-family:sans-serif;background:#1e1e2e;color:#cdd6f4;margin:0;padding:20px;max-width:600px;margin:auto;}"
          "h1{color:#89b4fa;}"
          ".card{background:#313244;padding:20px;border-radius:10px;margin:15px 0;}"
+         ".net{background:#313244;padding:10px 15px;border-radius:8px;font-size:14px;color:#a6adc8;}"
          "label{display:block;margin:10px 0 5px;font-weight:bold;}"
          "input[type=text]{width:100%;padding:10px;border-radius:6px;border:none;background:#45475a;color:#cdd6f4;font-size:16px;box-sizing:border-box;}"
          "input[type=range]{width:100%;}"
@@ -111,6 +163,9 @@ String htmlPage() {
          "</style></head><body>");
 
   s += F("<h1>Matrix Scroller 60x10</h1>");
+  s += F("<div class='net'>");
+  s += netStatusLine();
+  s += F("</div>");
   s += F("<form method='POST' action='/set'>");
 
   s += F("<div class='card'><label>Texte</label>"
@@ -144,7 +199,8 @@ String htmlPage() {
   s += F("</span></label>"
          "<input type='range' name='i' min='0' max='300' value='");
   s += timeIntervalS;
-  s += F("'><small>0 = jamais. Sinon, intercale la date+heure (NTP) tous les N secondes.</small></div>");
+  s += F("'><small>0 = jamais. Sinon, intercale la date+heure (NTP) tous les N secondes. "
+         "Ignore tant que l'heure n'est pas synchronisee (mode point d'acces).</small></div>");
 
   s += F("<button type='submit'>Appliquer</button></form></body></html>");
   return s;
@@ -167,7 +223,7 @@ void handleRoot() {
 void handleSet() {
   if (server.hasArg("t")) {
     userText = server.arg("t");
-    if (!showingTime) currentText = userText;
+    if (!showingTime && !showingInfo) currentText = userText;
   }
   if (server.hasArg("c")) {
     String c = server.arg("c");  // format "#RRGGBB" ou "%23RRGGBB"
@@ -193,6 +249,71 @@ void handleSet() {
   server.send(303);
 }
 
+void startServer() {
+  if (serverStarted) return;
+  server.on("/", handleRoot);
+  server.on("/set", HTTP_POST, handleSet);
+  server.onNotFound(handleRoot);  // portail captif : toute URL renvoie la config
+  server.begin();
+  serverStarted = true;
+}
+
+// Plus de WiFi utilisable : on devient nous-meme le reseau.
+void startAccessPoint() {
+  Serial.println("Pas de WiFi : bascule en point d'acces.");
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_AP);
+  const char* pass = (sizeof(AP_PASSWORD) - 1 >= 8) ? AP_PASSWORD : nullptr;
+  WiFi.softAP(AP_SSID, pass);
+  IPAddress ip = WiFi.softAPIP();
+  dnsServer.start(53, "*", ip);  // toutes les requetes DNS pointent sur nous
+  netState = NET_AP;
+  startServer();
+  queueInfo(String("Reseau ") + AP_SSID + " puis http://" + ip.toString());
+}
+
+// Machine a etats non bloquante : le defilement continue pendant ce temps.
+void handleNetwork() {
+  if (netState == NET_AP) {
+    dnsServer.processNextRequest();
+    return;
+  }
+  if (netState == NET_STA) return;
+
+  if (WiFi.status() == WL_CONNECTED) {
+    netState = NET_STA;
+    configTime(0, 0, "pool.ntp.org", "time.google.com", "fr.pool.ntp.org");
+    setenv("TZ", TZ_PARIS, 1);
+    tzset();
+    startServer();
+    queueInfo("IP " + WiFi.localIP().toString() + " - port 80");
+    return;
+  }
+  if (millis() - wifiStartMs >= WIFI_TIMEOUT_MS) startAccessPoint();
+}
+
+// Choisit le message du prochain cycle de defilement.
+void nextMessage() {
+  if (showingInfo) {
+    showingInfo = false;
+    infoText    = "";
+  } else if (showingTime) {
+    showingTime   = false;
+    lastTimeShown = millis();
+  }
+
+  if (infoText.length()) {            // info reseau : prioritaire, passe une fois
+    currentText = infoText;
+    showingInfo = true;
+  } else if (timeIntervalS > 0 && timeIsSynced() &&
+             millis() - lastTimeShown >= (unsigned long)timeIntervalS * 1000UL) {
+    currentText = formatTimeString();
+    showingTime = true;
+  } else {
+    currentText = userText;           // ressynchronise si modifie
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   delay(300);
@@ -208,76 +329,33 @@ void setup() {
   matrix.fillScreen(0);
   matrix.show();
 
+  // WiFi non bloquant : l'afficheur doit tourner meme sans reseau du tout.
   Serial.print("Connexion a ");
   Serial.println(WIFI_SSID);
   WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(300);
-    Serial.print(".");
-  }
-  Serial.println();
-  Serial.print("Connecte. Ouvre : http://");
-  Serial.println(WiFi.localIP());
-
-  // Affiche IP + port pendant ~5s au boot. L'IP complete tient pas sur 60 px
-  // en font 5x7, alors on alterne 3 ecrans centres : IP partie 1, partie 2, port.
-  matrix.setTextColor(matrix.Color(0, 200, 100));
-  String ipStr = WiFi.localIP().toString();
-  int dot2 = ipStr.indexOf('.', ipStr.indexOf('.') + 1);  // 2eme point
-  String screens[3] = {
-    ipStr.substring(0, dot2),       // "192.168"
-    ipStr.substring(dot2 + 1),      // "0.214"
-    "Port 80"
-  };
-  const uint16_t durations[3] = {1700, 1700, 1600};
-  for (int i = 0; i < 3; i++) {
-    matrix.fillScreen(0);
-    int textW = screens[i].length() * 6;
-    matrix.setCursor((MAT_WIDTH - textW) / 2, 1);
-    matrix.print(screens[i]);
-    matrix.show();
-    delay(durations[i]);
-  }
-  matrix.fillScreen(0);
-  matrix.show();
-
-  // Sync NTP (Europe/Paris)
-  configTime(0, 0, "pool.ntp.org", "time.google.com", "fr.pool.ntp.org");
-  setenv("TZ", TZ_PARIS, 1);
-  tzset();
-
-  server.on("/", handleRoot);
-  server.on("/set", HTTP_POST, handleSet);
-  server.begin();
+  wifiStartMs = millis();
 }
 
 void loop() {
-  server.handleClient();
+  handleNetwork();
+  if (serverStarted) server.handleClient();
 
-  if (millis() - lastScroll >= scrollMs) {
+  unsigned long stepMs = showingInfo ? INFO_SCROLL_MS : scrollMs;
+  if (millis() - lastScroll >= stepMs) {
     lastScroll = millis();
     matrix.fillScreen(0);
     matrix.setCursor(scrollX, 1);
-    matrix.setTextColor(matrix.Color(colR, colG, colB));
+    matrix.setTextColor(showingInfo ? matrix.Color(0, 200, 100)
+                                    : matrix.Color(colR, colG, colB));
     matrix.print(currentText);
     matrix.show();
 
     scrollX--;
     if (scrollX < -textPixelWidth(currentText)) {
-      // Fin du cycle : on decide quoi afficher au prochain tour
       scrollX = MAT_WIDTH;
-      if (showingTime) {
-        showingTime  = false;
-        currentText  = userText;
-        lastTimeShown = millis();
-      } else if (timeIntervalS > 0 &&
-                 millis() - lastTimeShown >= (unsigned long)timeIntervalS * 1000UL) {
-        currentText  = formatTimeString();
-        showingTime  = true;
-      } else {
-        currentText  = userText;  // ressynchronise si modifie
-      }
+      nextMessage();
     }
   }
 }

@@ -199,7 +199,7 @@ L'ESP32 sort sa data en 3.3 V, mais les WS2812B veulent un VIH ≥ 0.7 × VDD = 
 
 **Fix hardware** :
 - **Diode 1N4001** en série sur le V+ des LEDs (drop ~0.7 V → VDD ≈ 4.3 V → seuil VIH descend à 3.0 V). Essai à 5 centimes.
-- **Level shifter 74AHCT125** (ou 74HCT245) entre GPIO data et DIN du premier pixel. La vraie solution Adafruit. Composant à ~1 €.
+- **Level shifter 74AHCT125** (ou 74HCT245) entre GPIO data et DIN du premier pixel. La vraie solution Adafruit. Composant à ~1 €. ✅ **Validé sur la matrice 60×10 du CID** : câblé, flicker totalement résolu y compris WiFi actif.
 
 **Compilation/Upload** :
 ```bash
@@ -211,7 +211,7 @@ L'ESP32 sort sa data en 3.3 V, mais les WS2812B veulent un VIH ≥ 0.7 × VDD = 
 - `Web_Server/` - Petit serveur HTTP avec contrôle LED + infos système (uptime, RSSI, IP, MAC, heap)
 - `NTP_Clock/` - Horloge NTP affichée sur moniteur série, fuseau Europe/Paris avec heure d'été
 - `TFT_Shield_Test/` - Test shield TFT 3.5" (échec attendu : pins RS/CS/RST sur GPIO input-only, voir limitation ci-dessus)
-- `Matrix_Scroller/` - Texte défilant sur matrice WS2812B 60×10 (serpentin) avec config web (texte, couleur, luminosité, vitesse, intervalle NTP). Nécessite level shifter 3.3 V → 5 V (voir gotcha ci-dessus)
+- `Matrix_Scroller/` - Texte défilant sur matrice WS2812B 60×10 (serpentin) avec config web (texte, couleur, luminosité, vitesse, intervalle NTP). WiFi non bloquant : l'affichage démarre sans réseau, et après 15 s sans connexion la carte ouvre le point d'accès `Afficheur-CID` (192.168.4.1) avec portail captif — SSID/mot de passe surchargeables via `AP_SSID`/`AP_PASSWORD` dans `credentials.h`. Nécessite un level shifter 3.3 V → 5 V, en place et validé (voir gotcha ci-dessus)
 
 ## Circuit Playground Express
 
