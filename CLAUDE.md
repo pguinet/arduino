@@ -341,6 +341,23 @@ pio device monitor                   # Monitor série
 - LVGL 8.4 pour l'interface graphique
 - Drivers intégrés : esp_lcd_axs15231b, esp_bsp, esp_lcd_touch
 
+### ⚠️ API PRIM : TLS 1.3 obligatoire (libs recompilées)
+
+Depuis le 26/05/2026, `prim.iledefrance-mobilites.fr` n'accepte plus que
+**TLS 1.3**, absent des libs précompilées d'arduino-esp32. Sans les libs
+recompilées, tout sketch PRIM échoue avec **`HTTP -1`** (handshake
+`protocol_version`) — les autres API en TLS 1.2 continuent de marcher, ce qui
+rend le diagnostic trompeur.
+
+Vérifier avant de conclure quoi que ce soit sur un `HTTP -1` :
+```bash
+grep CONFIG_MBEDTLS_SSL_PROTO_TLS1_3 ~/.platformio/packages/framework-arduinoespressif32-libs/esp32s3/sdkconfig
+# attendu : CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y
+```
+
+Un `pio pkg update` réécrase ces libs. Procédure de reconstruction et de
+réinstallation : [`sketches/common/PRIM_TLS13_libs.md`](sketches/common/PRIM_TLS13_libs.md).
+
 **Sketches disponibles** :
 - `TouchTest/` - Test du tactile avec affichage des coordonnées en temps réel
 - `System_Monitor/` - Dashboard système avec jauges RAM, PSRAM, uptime
