@@ -7,7 +7,7 @@ using namespace dash;
 
 static const char *SAMPLE =
     "{\"host\":\"srv\",\"ts\":1000,"
-    "\"limits\":{\"h5\":42,\"h5_reset\":4600,\"d7\":18,\"d7_reset\":90000},"
+    "\"limits\":{\"h5\":42,\"h5_reset\":4600,\"d7\":18,\"d7_reset\":90000,\"updated\":990},"
     "\"sessions\":["
     "{\"id\":\"a1\",\"project\":\"arduino\",\"model\":\"Opus 5.5\",\"state\":\"permission\","
     "\"since\":950,\"ctx\":37,\"tool\":\"Bash\"},"
@@ -26,6 +26,7 @@ void test_parse_full() {
     TEST_ASSERT_EQUAL(4600, (long)s.limits.h5Reset);
     TEST_ASSERT_EQUAL(18, s.limits.d7);
     TEST_ASSERT_EQUAL(90000, (long)s.limits.d7Reset);
+    TEST_ASSERT_EQUAL(990, (long)s.limits.updated);
     TEST_ASSERT_EQUAL(2, s.count);
     TEST_ASSERT_EQUAL_STRING("a1", s.sessions[0].id);
     TEST_ASSERT_EQUAL_STRING("arduino", s.sessions[0].project);
@@ -45,6 +46,7 @@ void test_parse_no_limits() {
     TEST_ASSERT_TRUE(parseSnapshot(j, strlen(j), s));
     TEST_ASSERT_EQUAL(-1, s.limits.h5);
     TEST_ASSERT_EQUAL(-1, s.limits.d7);
+    TEST_ASSERT_EQUAL(0, (long)s.limits.updated);
     TEST_ASSERT_EQUAL(0, s.count);
 }
 

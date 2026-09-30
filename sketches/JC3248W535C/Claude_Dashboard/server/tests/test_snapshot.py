@@ -28,7 +28,7 @@ def test_basic_snapshot() -> None:
     assert snap == {
         "host": "srv",
         "ts": NOW,
-        "limits": {"h5": 42},
+        "limits": {"h5": 42, "updated": 1},
         "sessions": [
             {
                 "id": "abcdef01",
@@ -215,7 +215,7 @@ def test_all_limit_keys_published() -> None:
         "h5_reset": 1_700_000_000,
         "d7": 7,
         "d7_reset": 1_700_500_000,
-        "updated": 1,
+        "updated": NOW - 30,
         "other": "x",
     }
     snap, _ = build_snapshot("srv", [], limits, NOW, pid_alive=lambda p: True)
@@ -224,6 +224,7 @@ def test_all_limit_keys_published() -> None:
         "h5_reset": 1_700_000_000,
         "d7": 7,
         "d7_reset": 1_700_500_000,
+        "updated": NOW - 30,
     }
 
 
@@ -235,6 +236,43 @@ def test_limits_validated() -> None:
     assert "limits" not in snap
     snap, _ = build_snapshot("srv", [], ["h5"], NOW, pid_alive=lambda p: True)
     assert "limits" not in snap
+
+
+def test_expired_window_omitted() -> None:
+    # Statusline muette depuis la fin de la fenêtre 5h : valeur périmée, omise
+    limits = {
+        "h5": 23,
+        "h5_reset": NOW - 1,
+        "d7": 55,
+        "d7_reset": NOW + 3600,
+        "updated": NOW - 9000,
+    }
+    snap, _ = build_snapshot("srv", [], limits, NOW, pid_alive=lambda p: True)
+    assert snap["limits"] == {"d7": 55, "d7_reset": NOW + 3600, "updated": NOW - 9000}
+
+
+def test_reset_exactly_now_is_expired() -> None:
+    limits = {"h5": 23, "h5_reset": NOW, "d7": 55, "d7_reset": NOW + 1}
+    snap, _ = build_snapshot("srv", [], limits, NOW, pid_alive=lambda p: True)
+    assert snap["limits"] == {"d7": 55, "d7_reset": NOW + 1}
+
+
+def test_all_windows_expired_no_limits() -> None:
+    limits = {"h5": 23, "h5_reset": NOW - 10, "d7": 55, "d7_reset": NOW - 10, "updated": NOW - 99}
+    snap, _ = build_snapshot("srv", [], limits, NOW, pid_alive=lambda p: True)
+    assert "limits" not in snap
+
+
+def test_updated_alone_not_published() -> None:
+    snap, _ = build_snapshot("srv", [], {"updated": NOW}, NOW, pid_alive=lambda p: True)
+    assert "limits" not in snap
+
+
+def test_unknown_reset_never_expires() -> None:
+    # reset absent ou hors bornes (-> 0) : la fenêtre est gardée
+    limits = {"h5": 5, "d7": 6, "d7_reset": -1}
+    snap, _ = build_snapshot("srv", [], limits, NOW, pid_alive=lambda p: True)
+    assert snap["limits"] == {"h5": 5, "d7": 6, "d7_reset": 0}
 
 
 def test_non_dict_sessions_skipped() -> None:
