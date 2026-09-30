@@ -121,6 +121,7 @@ def test_new_options_defaults(tmp_path: Path) -> None:
     assert cfg.certfile is None and cfg.keyfile is None
     assert cfg.retain is True
     assert cfg.heartbeat == 60
+    assert cfg.transport == "tcp"
 
 
 def test_explicit_client_id(tmp_path: Path) -> None:
@@ -218,6 +219,18 @@ def test_retain_can_be_disabled(tmp_path: Path) -> None:
 def test_retain_must_be_bool(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="retain"):
         load_config(write(tmp_path, '[mqtt]\nhost="h"\nretain="no"\n'))
+
+
+@pytest.mark.parametrize("value", ["tcp", "websockets"])
+def test_transport_accepted(tmp_path: Path, value: str) -> None:
+    cfg = load_config(write(tmp_path, f'[mqtt]\nhost="h"\ntransport="{value}"\n'))
+    assert cfg.transport == value
+
+
+@pytest.mark.parametrize("value", ['"ws"', '"WEBSOCKETS"', '""', "true", "443"])
+def test_transport_rejected(tmp_path: Path, value: str) -> None:
+    with pytest.raises(ConfigError, match="transport"):
+        load_config(write(tmp_path, f'[mqtt]\nhost="h"\ntransport={value}\n'))
 
 
 @pytest.mark.parametrize("value", [5, 20, 170])

@@ -167,7 +167,9 @@ def on_connect_fail_callback(cfg: Config, connect_outage: Outage) -> Callable[..
 
 
 def _make_client(cfg: Config, connected: threading.Event) -> mqtt.Client:
-    client = mqtt.Client(CallbackAPIVersion.VERSION2, client_id=cfg.client_id)
+    client = mqtt.Client(
+        CallbackAPIVersion.VERSION2, client_id=cfg.client_id, transport=cfg.transport
+    )
     if cfg.tls:
         # certfile/keyfile : authentification mTLS (Scaleway IoT Hub), sinon None
         client.tls_set(ca_certs=cfg.ca_certs, certfile=cfg.certfile, keyfile=cfg.keyfile)

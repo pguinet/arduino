@@ -320,6 +320,7 @@ def make_cfg(**overrides: Any) -> Config:
         "keyfile": None,
         "retain": True,
         "heartbeat": 60,
+        "transport": "tcp",
     }
     fields.update(overrides)
     return Config(**fields)
@@ -391,6 +392,14 @@ def test_client_uses_configured_id_and_mtls(fake_client: type[FakeClient]) -> No
     ]
     assert client.called("username_pw_set") == []
     assert client.called("connect_async") == [(("iot.example", 8883), {"keepalive": 60})]
+    assert client.init_kwargs["transport"] == "tcp"
+
+
+def test_client_uses_configured_transport(fake_client: type[FakeClient]) -> None:
+    agent._make_client(make_cfg(transport="websockets", port=443), threading.Event())
+    client = fake_client.instances[0]
+    assert client.init_kwargs["transport"] == "websockets"
+    assert client.called("connect_async") == [(("iot.example", 443), {"keepalive": 60})]
 
 
 def test_client_without_tls_skips_tls_set(fake_client: type[FakeClient]) -> None:

@@ -9,7 +9,7 @@ import stat
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 _TOPIC_FORBIDDEN = set("/+#\0")
 _HOSTNAME = re.compile(r"[A-Za-z0-9._-]{1,32}")
@@ -18,6 +18,9 @@ _CLIENT_ID = re.compile(r"\S{1,64}")
 PLACEHOLDER_PREFIX = "votre_"
 # L'écran juge un serveur injoignable après 180 s sans message : marge de 10 s.
 HEARTBEAT_RANGE = (5, 170)
+# "websockets" : MQTT sur wss (port 443) quand le 8883 sortant est filtré.
+Transport = Literal["tcp", "websockets"]
+TRANSPORTS: tuple[Transport, ...] = ("tcp", "websockets")
 
 
 class ConfigError(Exception):
@@ -39,6 +42,7 @@ class Config:
     keyfile: str | None
     retain: bool
     heartbeat: int
+    transport: Transport
 
     @property
     def topic(self) -> str:
@@ -137,6 +141,14 @@ def _heartbeat(agent: dict[str, Any]) -> int:
     return value
 
 
+def _transport(mqtt: dict[str, Any]) -> Transport:
+    value = mqtt.get("transport", "tcp")
+    for transport in TRANSPORTS:
+        if value == transport:
+            return transport
+    raise ConfigError(f"transport invalide ({' ou '.join(TRANSPORTS)}): {value!r}")
+
+
 def _reject_placeholders(*sections: dict[str, Any]) -> None:
     """Refuse une valeur d'exemple laissée telle quelle : l'agent s'arrête (code 2)
     au lieu de boucler sur une connexion vouée à l'échec."""
@@ -184,6 +196,7 @@ def load_config(path: Path) -> Config:
             keyfile=keyfile,
             retain=_opt_bool(mqtt, "retain", True),
             heartbeat=_heartbeat(agent),
+            transport=_transport(mqtt),
         )
     except ConfigError as exc:
         raise ConfigError(f"{path}: {exc}") from None
