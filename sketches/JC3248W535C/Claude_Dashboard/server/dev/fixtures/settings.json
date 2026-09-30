@@ -1,0 +1,39 @@
+{
+  "env": {
+    "EXAMPLE": "1"
+  },
+  "permissions": {
+    "allow": ["Bash(git status)"],
+    "defaultMode": "auto"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "/home/u/.claude/hooks/guard.sh" },
+          { "type": "command", "command": "/home/u/.claude/hooks/rewrite.sh" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "/old/home/.local/bin/claude-dash-hook", "timeout": 5 },
+          { "type": "command", "command": "notify-send 'Claude a fini'" }
+        ]
+      }
+    ],
+    "PreCompact": [
+      { "hooks": [{ "type": "command", "command": "echo compact" }] }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "bash /home/u/.claude/statusline.sh"
+  },
+  "enabledPlugins": {
+    "example@marketplace": true
+  },
+  "language": "Français"
+}

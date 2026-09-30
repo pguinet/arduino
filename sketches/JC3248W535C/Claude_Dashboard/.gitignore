@@ -1,0 +1,7 @@
+# Certificats et cles des devices Scaleway, fichiers intermediaires de
+# tools/pem2credentials.sh : jamais dans le depot (ils vont dans credentials.h).
+*.key
+*.pem
+*.crt
+bloc.h
+dash_pem_block.h

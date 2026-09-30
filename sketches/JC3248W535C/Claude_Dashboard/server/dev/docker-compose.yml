@@ -1,0 +1,7 @@
+# Broker Mosquitto local pour les tests d'intégration de l'agent.
+# Port hôte configurable (défaut 18830) pour ne pas entrer en conflit avec un broker existant.
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports: ["${CLAUDE_DASH_MQTT_PORT:-18830}:1883"]
+    volumes: ["./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro"]
