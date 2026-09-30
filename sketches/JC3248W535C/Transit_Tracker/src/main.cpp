@@ -1290,7 +1290,11 @@ void setup()
         .idle_core_mask = 0,
         .trigger_panic = true,
     };
-    esp_task_wdt_init(&wdt_config);
+    // Le framework initialise deja le TWDT a 5 s (CONFIG_ESP_TASK_WDT_INIT) :
+    // esp_task_wdt_init() seul echouerait (ESP_ERR_INVALID_STATE) et laisserait 5 s.
+    esp_err_t err = esp_task_wdt_reconfigure(&wdt_config);
+    if (err == ESP_ERR_INVALID_STATE) err = esp_task_wdt_init(&wdt_config);
+    if (err != ESP_OK) Serial.printf("WDT : configuration echouee (%d)\n", err);
     esp_task_wdt_add(NULL);
 
     bsp_display_cfg_t cfg = {
