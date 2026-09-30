@@ -244,3 +244,28 @@ def test_encrypted_keyfile_rejected(tmp_path: Path, header: str) -> None:
     key.write_text(f"{header}\nabc\n")
     with pytest.raises(ConfigError, match="chiffrée"):
         load_config(write(tmp_path, f'[mqtt]\nhost="h"\ncertfile="{cert}"\nkeyfile="{key}"\n'))
+
+
+@pytest.mark.parametrize(
+    ("section", "key"),
+    [
+        ("mqtt", "host"),
+        ("mqtt", "client_id"),
+        ("mqtt", "username"),
+        ("agent", "hostname"),
+    ],
+)
+def test_example_placeholder_rejected(tmp_path: Path, section: str, key: str) -> None:
+    tables: dict[str, dict[str, str]] = {"mqtt": {"host": '"h"', "tls": "false"}, "agent": {}}
+    tables[section][key] = '"votre_valeur"'
+    body = "".join(
+        f"[{name}]\n" + "".join(f"{k}={v}\n" for k, v in fields.items())
+        for name, fields in tables.items()
+    )
+    with pytest.raises(ConfigError, match=f"valeur d'exemple non renseignée : {key}"):
+        load_config(write(tmp_path, body))
+
+
+def test_placeholder_only_as_prefix(tmp_path: Path) -> None:
+    cfg = load_config(write(tmp_path, '[mqtt]\nhost="h"\n[agent]\nhostname="pas_votre_nom"\n'))
+    assert cfg.hostname == "pas_votre_nom"

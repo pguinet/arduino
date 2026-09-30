@@ -14,6 +14,8 @@ from typing import Any
 _TOPIC_FORBIDDEN = set("/+#\0")
 _HOSTNAME = re.compile(r"[A-Za-z0-9._-]{1,32}")
 _CLIENT_ID = re.compile(r"\S{1,64}")
+# Préfixe des valeurs d'exemple de config.toml.example (aussi détecté par install.sh).
+PLACEHOLDER_PREFIX = "votre_"
 # L'écran juge un serveur injoignable après 180 s sans message : marge de 10 s.
 HEARTBEAT_RANGE = (5, 170)
 
@@ -135,6 +137,15 @@ def _heartbeat(agent: dict[str, Any]) -> int:
     return value
 
 
+def _reject_placeholders(*sections: dict[str, Any]) -> None:
+    """Refuse une valeur d'exemple laissée telle quelle : l'agent s'arrête (code 2)
+    au lieu de boucler sur une connexion vouée à l'échec."""
+    for section in sections:
+        for key, value in section.items():
+            if isinstance(value, str) and value.startswith(PLACEHOLDER_PREFIX):
+                raise ConfigError(f"valeur d'exemple non renseignée : {key}")
+
+
 def load_config(path: Path) -> Config:
     try:
         mode = stat.S_IMODE(path.stat().st_mode)
@@ -148,6 +159,7 @@ def load_config(path: Path) -> Config:
     if not isinstance(mqtt, dict) or not isinstance(agent, dict):
         raise ConfigError(f"{path}: [mqtt] et [agent] doivent être des tables")
     try:
+        _reject_placeholders(mqtt, agent)
         host = _opt_str(mqtt, "host")
         if not host:
             raise ConfigError("[mqtt] host manquant")

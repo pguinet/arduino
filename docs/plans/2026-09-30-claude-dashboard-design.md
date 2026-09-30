@@ -26,12 +26,13 @@ Serveur Linux distant                                   Cloud            Maison
 │                 ▼                        │
 │  ~/.claude/dashboard/sessions/<id>.json  │
 │                 │ inotify                │
-│                 ▼                        │     MQTT/TLS       MQTT/TLS
-│  claude-dash-agent (systemd --user) ─────┼──► broker ────► JC3248 (LVGL)
+│                 ▼                        │     MQTT mTLS      MQTT mTLS
+│  claude-dash-agent (systemd --user) ─────┼──► IoT Hub ───► JC3248 (LVGL)
 └──────────────────────────────────────────┘    8883
 ```
 
-Le broker MQTT est un broker **cloud dédié**, distinct du broker local de la maison.
+Le broker MQTT est un broker **cloud dédié**, distinct du broker local de la maison :
+Scaleway IoT Hub, plan Shared (mTLS, sans état : ni retained ni session persistante).
 
 ### Collecte (serveur)
 
@@ -61,10 +62,11 @@ Démon Python (`claude-dash-agent`, service systemd `--user`) :
 - surveille `~/.claude/dashboard/sessions/` ;
 - une seule connexion MQTT/TLS persistante (`paho-mqtt`) ;
 - publie un snapshot sur `claude-dash/<hostname>/state` à chaque changement (au
-  plus toutes les 2 s) et au moins toutes les 60 s (heartbeat réglable), **retained**
-  si le broker le permet ; avec Scaleway IoT Hub Shared (sans état, pas de retained)
-  : `retain = false` et heartbeat de 20 s, pour qu'un écran qui démarre reçoive
-  l'état rapidement ;
+  plus toutes les 2 s) et au moins toutes les 20 s (heartbeat) ; Scaleway IoT Hub
+  Shared ne garde aucun message retained : `retain = false`, et le heartbeat de
+  20 s borne l'attente d'un écran qui démarre ;
+- à l'arrêt propre (SIGTERM/SIGINT), publie un **message vide** (QoS 1, attendu 3 s
+  au plus avant la déconnexion) : l'écran retire aussitôt l'hôte ;
 - purge les sessions dont le PID n'existe plus ;
 - les quotas sont globaux au compte : on garde la valeur la plus récente reçue.
 
@@ -81,7 +83,7 @@ Démon Python (`claude-dash-agent`, service systemd `--user`) :
 }
 ```
 
-Taille < 2,5 Ko pour 12 sessions (texte ramené en ASCII). Le JC3248 s'abonne à `claude-dash/+/state`
+Taille ≈ 2,3 Ko typique, ≤ 3,5 Ko pire cas (tampon MQTT 4 Ko ; texte ramené en ASCII). Le JC3248 s'abonne à `claude-dash/+/state`
 (plusieurs serveurs possibles).
 
 ## Écran (JC3248)
@@ -116,6 +118,11 @@ Paysage 480×320 (rotation 270°, comme Transit_Tracker), LVGL 8, Montserrat int
 - **États dégradés** : pastille rouge si WiFi/MQTT coupé (reconnexion auto) ; bandeau
   « Serveur injoignable depuis X min » sans heartbeat depuis 3 min, données grisées ;
   « Aucune session active » sinon.
+- **Cycle de vie d'un hôte** : arrêt propre de l'agent → message vide, hôte retiré
+  immédiatement ; plantage, coupure ou mise en veille → grisé + bandeau après 3 min,
+  **oublié après 1 h** sans nouvelles (le slot se libère, et sans session listée
+  l'écran peut se mettre en veille 10 min plus tard). Un hôte qui revient est traité
+  comme nouveau (pas de bip).
 - Plusieurs `host` : le nom du serveur apparaît sur chaque carte.
 
 ## Sécurité

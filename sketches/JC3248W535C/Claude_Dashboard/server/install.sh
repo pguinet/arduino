@@ -101,8 +101,8 @@ edit_settings() {
   backup="$SETTINGS.bak-claude-dash-$(date +%Y%m%d-%H%M%S-%N)-$$"
   cp "$orig" "$backup"
   chmod --reference="$target" "$tmp"
-  # point d'injection pour dev/test-install.sh (modification concurrente simulée)
-  if [ -n "${CLAUDE_DASH_TEST_BEFORE_WRITE:-}" ]; then bash -c "$CLAUDE_DASH_TEST_BEFORE_WRITE"; fi
+  # test uniquement : point d'injection pour dev/test-install.sh (modification concurrente)
+  if [ -n "${_CLAUDE_DASH_TEST_BEFORE_WRITE:-}" ]; then bash -c "$_CLAUDE_DASH_TEST_BEFORE_WRITE"; fi
   cmp -s "$orig" "$target" \
     || die "$SETTINGS a été modifié pendant l'opération : rien écrit, relance le script"
   mv -f "$tmp" "$target"
@@ -154,7 +154,8 @@ install_config() {
     return 1
   fi
   chmod 600 "$CONF_DIR/config.toml"
-  if grep -q 'votre_' "$CONF_DIR/config.toml"; then
+  # placeholders hors commentaires (l'exemple en garde dans ses blocs commentés)
+  if sed 's/#.*//' "$CONF_DIR/config.toml" | grep -q 'votre_'; then
     info "config $CONF_DIR/config.toml encore non renseignée (placeholders votre_…)"
     return 1
   fi

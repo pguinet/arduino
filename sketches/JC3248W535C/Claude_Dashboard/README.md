@@ -30,7 +30,9 @@ Serveur Linux (un ou plusieurs)                  Scaleway IoT Hub        Maison
 - **Agent** (`server/`) : agrège les sessions, purge celles dont le processus
   `claude` est mort, publie un snapshot JSON sur `claude-dash/<hostname>/state` à
   chaque changement (au plus toutes les 2 s) et au moins toutes les 20 s
-  (heartbeat : le plan Shared ne garde aucun message retained).
+  (heartbeat : le plan Shared ne garde aucun message retained). À l'arrêt propre
+  (SIGTERM, `systemctl --user stop`), il publie un message vide : l'écran retire
+  aussitôt le serveur.
 - **Broker** : Scaleway IoT Hub, plan Shared (gratuit). Chaque client
   s'authentifie par certificat (mTLS) ; le client id MQTT est le Device ID.
 - **Firmware** : WiFi, NTP, MQTT/TLS (PubSubClient + `NetworkClientSecure`), LVGL
@@ -66,8 +68,12 @@ Serveur Linux (un ou plusieurs)                  Scaleway IoT Hub        Maison
   (jusqu'à 20 s après le démarrage), « Aucune session active » ensuite.
 - **Bandeau rose « Serveur injoignable depuis N min »** et liste estompée quand
   le dernier snapshot a plus de 180 s (calculé depuis son horodatage `ts`).
-  Un serveur muet depuis plus de 6 h peut céder sa place à un nouveau (4
-  serveurs et 12 sessions par serveur au plus).
+- **Serveur oublié après 1 h sans nouvelles** (agent planté, coupure réseau,
+  serveur en veille) : ses cartes et le bandeau disparaissent (`Hote oublie apres
+  1 h sans nouvelles` sur le port série), et l'écran peut se mettre en veille
+  10 min plus tard. Un arrêt propre de l'agent le retire immédiatement (message
+  vide). 4 serveurs et 12 sessions par serveur au plus. Un serveur qui revient est
+  traité comme nouveau (pas de bip).
 - **Bips** (NS4168, volume `BEEP_VOLUME` = 35 %) sur un changement d'état d'une
   session déjà connue : deux bips aigus pour `permission`, un bip grave pour
   `attente`. Pas de bip au démarrage, au premier snapshot d'un serveur, ni au
@@ -185,7 +191,7 @@ timeout 40 script -qfc "$PIO device monitor -e esp32s3" capture.log < /dev/null
 Démarrage normal : `WiFi connecte, IP ...`, `NTP synchronise : ...`,
 `MQTT connecte en ... ms (client xxxxxxxx...)`, `[TLS connecte] heap interne ...`,
 `Abonne a claude-dash/+/state (QoS 0) ...`, puis les cartes au premier
-heartbeat (≤ 20 s).
+heartbeat (≤ heartbeat de l'agent, 20 s par défaut).
 
 Délai de veille court pour les essais :
 `PLATFORMIO_BUILD_FLAGS="-DSCREEN_TIMEOUT_MS=45000UL" $PIO run -e esp32s3 -t upload`
@@ -194,7 +200,7 @@ Délai de veille court pour les essais :
 ## Tests et qualité
 
 ```bash
-$PIO test -e native                     # dash_model : 55 tests Unity sur le PC
+$PIO test -e native                     # dash_model : 62 tests Unity sur le PC
 $PIO check -e esp32s3 --skip-packages   # cppcheck sur main.cpp, ui.cpp, beep.cpp, dash_model
 server/run-checks.sh                    # agent : ruff, mypy, pytest (Docker)
 server/dev/integration-test.sh          # agent + Mosquitto local (Docker)

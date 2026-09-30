@@ -2,9 +2,9 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers-extended-cc:executing-plans to implement this plan task-by-task.
 
-**Goal:** Tableau de bord Claude Code sur JC3248W535C alimenté par un agent Python tournant sur un serveur Linux distant, via un broker MQTT cloud (TLS).
+**Goal:** Tableau de bord Claude Code sur JC3248W535C alimenté par un agent Python tournant sur un serveur Linux distant, via Scaleway IoT Hub (plan Shared, MQTT mTLS, sans retain).
 
-**Architecture:** Côté serveur, des hooks Claude Code et la statusline écrivent un fichier JSON par session dans `~/.claude/dashboard/` ; un démon (`claude-dash-agent`) agrège ces fichiers, purge les sessions mortes et publie un snapshot retained sur `claude-dash/<host>/state`. Côté ESP32, un modèle pur C++ (`dash_model`, testé en natif) parse les snapshots, trie les sessions et détecte les transitions ; `main.cpp` gère WiFi/MQTT-TLS, LVGL, le bip I2S et la veille.
+**Architecture:** Côté serveur, des hooks Claude Code et la statusline écrivent un fichier JSON par session dans `~/.claude/dashboard/` ; un démon (`claude-dash-agent`) agrège ces fichiers, purge les sessions mortes et publie un snapshot (sans retain, heartbeat 20 s) sur `claude-dash/<host>/state`, et un message vide à l'arrêt propre (retrait de l'hôte). Côté ESP32, un modèle pur C++ (`dash_model`, testé en natif) parse les snapshots, trie les sessions, détecte les transitions et oublie les hôtes muets depuis 1 h ; `main.cpp` gère WiFi/MQTT mTLS, LVGL, le bip I2S et la veille (écran allumé tant qu'une session est listée, sinon veille après 10 min).
 
 **Tech Stack:** Python 3.11+ (stdlib + `paho-mqtt` 2.x), pytest/ruff/mypy dans Docker ; PlatformIO pioarduino (Arduino 3.0.7 / IDF 5.1), LVGL 8.4, ArduinoJson 7, PubSubClient 2.8, ESP_I2S, Unity (env `native`).
 

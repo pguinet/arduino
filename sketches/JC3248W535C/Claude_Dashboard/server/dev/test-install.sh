@@ -137,7 +137,7 @@ reset_home
 cp "$SRC/dev/fixtures/settings.json" "$SETTINGS"
 concurrent='{"modifie": "ailleurs"}'
 check "modification concurrente : échec" \
-  env CLAUDE_DASH_TEST_BEFORE_WRITE="echo '$concurrent' >'$SETTINGS'" \
+  env _CLAUDE_DASH_TEST_BEFORE_WRITE="echo '$concurrent' >'$SETTINGS'" \
   bash -c "! '$INSTALL' --hooks-only 2>$LOG"
 check "modification concurrente : message clair" grep -q "modifié pendant" "$LOG"
 check "modification concurrente : version concurrente conservée" \
@@ -188,6 +188,15 @@ for cmd in claude-dash-hook claude-dash-statusline claude-dash-agent; do
   check "commande $cmd exécutable" test -x "$HOME/.local/bin/$cmd"
 done
 check "config créée en 600" bash -c "[ \$(stat -c %a '$CONF') = 600 ]"
+check "config créée : à renseigner" grep -q "config créée : .*(à renseigner)" "$LOG"
+check "config par défaut : Scaleway mTLS sans retain" \
+  bash -c "grep -qx 'host = \"iot.fr-par.scw.cloud\".*' '$CONF' && grep -qx 'retain = false' '$CONF'"
+set +e
+XDG_CONFIG_HOME="$HOME/.config" "$HOME/.local/bin/claude-dash-agent" >"$LOG.agent" 2>&1
+agent_rc=$?
+set -e
+check "agent : config d'exemple refusée (code 2, pas de boucle systemd)" \
+  bash -c "[ $agent_rc = 2 ] && grep -q \"valeur d'exemple non renseignée : client_id\" '$LOG.agent'"
 check "venv cassé recréé" test -x "$HOME/.local/share/claude-dash/venv/bin/python"
 check "service copié" test -f "$HOME/.config/systemd/user/claude-dash-agent.service"
 check "service : pas de relance en boucle sur erreur de config" \
@@ -201,11 +210,16 @@ check "le hook installé écrit la session" \
 check "la statusline installée s'exécute" \
   bash -c "echo '{}' | timeout 5 '$HOME/.local/bin/claude-dash-statusline'"
 
-sed -i 's/votre_host/broker.example/' "$CONF"
+"$INSTALL" >"$LOG" 2>&1 || true
+check "install avec placeholders : config signalée non renseignée" \
+  grep -q "encore non renseignée" "$LOG"
+# valeurs actives renseignées ; les votre_ des blocs commentés restent
+sed -i -e 's/votre_device_id_serveur/broker.example/' -e 's/votre_hostname/srv-test/' "$CONF"
 chmod 644 "$CONF"
 sum=$(sha256sum "$SETTINGS")
 if "$INSTALL" >"$LOG" 2>&1; then pass "2e install.sh réussit"; else fail "2e install.sh réussit"; cat "$LOG"; fi
 check "2e install : config conservée" grep -q broker.example "$CONF"
+check "2e install : placeholders commentés ignorés" bash -c "! grep -q 'non renseignée' '$LOG'"
 check "2e install : config remise en 600" bash -c "[ \$(stat -c %a '$CONF') = 600 ]"
 check "2e install : settings.json inchangé" bash -c "[ '$sum' = \"\$(sha256sum '$SETTINGS')\" ]"
 check "2e install : rappel des sessions à redémarrer" grep -q "/hooks" "$LOG"
