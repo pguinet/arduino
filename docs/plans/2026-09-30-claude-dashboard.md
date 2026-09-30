@@ -3099,111 +3099,47 @@ git commit -m "Claude_Dashboard: interface LVGL (quotas, cartes de session, band
 
 ### Task 13: WiFi, NTP et MQTT/TLS dans `main.cpp`
 
+Broker = Scaleway IoT Hub, plan Shared (Task 5b) : mTLS, client id = Device ID de l'écran, pas de retained, abonnement QoS 0 uniquement, pas de session persistante. L'écran se remplit au premier heartbeat de l'agent (≤ 20 s) ; d'ici là, « En attente de donnees... ».
+
 **Files:**
-- Modify: `$FW/src/main.cpp`
+- Modify: `$FW/lib/dash_model/dash_model.{h,cpp}`, `$FW/test/test_dashboard/test_main.cpp` (détection de changement, TDD)
+- Modify: `$FW/src/ui.cpp` (plafond de cartes, `ui_tick` économe)
+- Modify: `$FW/src/main.cpp` (démo retirée, vraie boucle), `$FW/platformio.ini` (`-DMQTT_MAX_PACKET_SIZE` retiré)
 
-**Step 1: Remplacer la démo par la vraie boucle.** Points clés :
+**Step 1: Détection de changement dans `dash_model` (TDD natif).** `Alert Dashboard::apply(const HostSnapshot&, int64_t now, bool *changed = nullptr)` : `*changed` vrai pour un nouvel hôte, un nombre de sessions ou un champ de session différent (id, project, model, tool, state, since, ctx), des quotas différents, ou quand les quotas affichés (`limits()` = snapshot le plus récent avec quotas) changent d'hôte ; faux quand seul `ts` change (heartbeat) ou quand l'hôte est ignoré (tableau plein). `removeHost()` renvoie déjà `true` quand il retire un hôte. Tests : `test_changed_on_new_host`, `test_not_changed_when_only_ts_differs`, `test_changed_on_session_state`, `test_changed_on_session_fields`, `test_changed_on_session_count`, `test_changed_on_limits`, `test_changed_when_displayed_limits_switch_host`, `test_not_changed_when_host_ignored`. But : ne reconstruire la liste (qui interrompt le défilement tactile) qu'en cas de vrai changement.
 
-```cpp
-#include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <PubSubClient.h>
-#include <esp_task_wdt.h>
-#include <time.h>
-#include "credentials.h"
-#include "dash_model.h"
-#include "ui.h"
+**Step 2: `ui.cpp`.**
+- `MAX_CARDS = 16` cartes au plus, puis un libellé gris « +N autres sessions » (lignes triées par urgence : rien d'important n'est coupé).
+- `ui_tick` ne touche aux objets que si l'état affiché change : texte des labels comparé avant `lv_label_set_text` (horloge, durées, bandeau), pastille MQTT et état périmé (bandeau + opacité de la liste) mis en cache. Sans session, plus de redessin chaque seconde.
 
-#define WDT_TIMEOUT_SEC   30
-#define MQTT_TOPIC        "claude-dash/+/state"
-#define MQTT_RETRY_MS     5000
-#define WIFI_RETRY_MS     10000
-
-static WiFiClientSecure tls;
-static PubSubClient mqtt(tls);
-static dash::Dashboard dashboard;
-static dash::HostSnapshot incoming;       // statique : ~2 Ko, hors pile
-static volatile bool pendingRender = false;
-static dash::Alert pendingAlert = dash::Alert::None;
-
-static void onMessage(char *topic, byte *payload, unsigned int len) {
-    if (len == 0) {
-        // Retained efface (agent desinstalle / hote retire) : oublier l'hote.
-        // topic = "claude-dash/<host>/state"
-        char host[33];
-        if (sscanf(topic, "claude-dash/%32[^/]/state", host) == 1 && dashboard.removeHost(host))
-            pendingRender = true;
-        return;
-    }
-    if (!dash::parseSnapshot((const char *)payload, len, incoming)) {
-        Serial.printf("Snapshot invalide sur %s\n", topic);
-        return;
-    }
-    time_t now = time(nullptr);
-    // Un decalage d'horloge fausse la staleness et rend l'ecran muet
-    // (snapshots juges perimes -> alertes supprimees) : le signaler.
-    if (incoming.ts > 0 && llabs((long long)now - (long long)incoming.ts) > 30)
-        Serial.printf("Attention : horloge decalee de %lld s avec %s (NTP ?)\n",
-                      (long long)now - (long long)incoming.ts, incoming.host);
-    dash::Alert a = dashboard.apply(incoming, now);
-    if (a == dash::Alert::Permission || pendingAlert == dash::Alert::None) pendingAlert = a;
-    pendingRender = true;
-}
-
-static bool mqttConnect() {
-    char clientId[40];
-    snprintf(clientId, sizeof clientId, "jc3248-dash-%012llx", ESP.getEfuseMac());
-    if (!mqtt.connect(clientId, DASH_MQTT_USER, DASH_MQTT_PASS)) {
-        Serial.printf("MQTT echec rc=%d\n", mqtt.state());
-        return false;
-    }
-    mqtt.subscribe(MQTT_TOPIC, 1);
-    Serial.println("MQTT connecte");
-    return true;
-}
-```
-
-`onMessage` doit appeler `removeHost` sur un payload vide (retained effacé) et journaliser un avertissement quand `|time(nullptr) - ts| > 30 s` : un décalage d'horloge fait juger les snapshots périmés, ce qui rend l'écran muet. Nota : un message retained ancien (agent mort) déclenche aussi l'avertissement au démarrage, c'est attendu.
-
-Dans `setup()` : watchdog (comme Transit_Tracker), écran, `ui_create()`, WiFi non bloquant au-delà de 15 s, NTP (`configTime` + TZ Paris, attendre `time() > 1704067200`, requis pour valider le certificat TLS), puis :
+**Step 3: `main.cpp`.** En-tête standard (`@dependencies LVGL 8.3.x, ArduinoJson, PubSubClient`). Plus de démo (`loadDemo`, `settimeofday` fixe, reconstruction toutes les 5 s, attente du port série).
+- `#error` explicite si une macro de `credentials.h` manque (`WIFI_SSID`, `WIFI_PASSWORD`, `DASH_MQTT_SERVER`, `DASH_MQTT_PORT`, `DASH_MQTT_CLIENT_ID`, `DASH_MQTT_CA_CERT`, `DASH_MQTT_CLIENT_CERT`, `DASH_MQTT_CLIENT_KEY`), modèle `sketches/common/credentials.h.example`.
+- Au démarrage, les trois PEM sont analysés par mbedTLS (`mbedtls_x509_crt_parse` / `mbedtls_pk_parse_key`) : un PEM invalide est nommé (`ERREUR credentials.h : DASH_MQTT_CA_CERT invalide ...`), MQTT est désactivé, et le message est répété toutes les 60 s pour un moniteur ouvert tard. L'erreur du handshake (-4396, « BASE64 - Invalid character ») ne dit pas lequel est en cause.
+- `setup()` : watchdog 30 s (comme Transit_Tracker), écran, `ui_create()` + `ui_render()`, `WiFi.begin()` et `configTzTime(TZ Paris, pool.ntp.org, time.google.com)` sans attente, puis :
 
 ```cpp
 tls.setCACert(DASH_MQTT_CA_CERT);
+tls.setCertificate(DASH_MQTT_CLIENT_CERT);
+tls.setPrivateKey(DASH_MQTT_CLIENT_KEY);
+tls.setConnectionTimeout(5000);     // ms (defaut 30 s = le WDT)
+tls.setHandshakeTimeout(8);         // s  (defaut 120 s)
 mqtt.setServer(DASH_MQTT_SERVER, DASH_MQTT_PORT);
-mqtt.setBufferSize(4096);
+if (!mqtt.setBufferSize(4096)) Serial.printf("ERREUR : tampon MQTT ...");
 mqtt.setKeepAlive(60);
-mqtt.setSocketTimeout(10);
+mqtt.setSocketTimeout(5);           // attente du CONNACK
 mqtt.setCallback(onMessage);
 ```
 
-Dans `loop()` :
-- `esp_task_wdt_reset()` ;
-- reconnexion WiFi toutes les 10 s si perdu (comme Transit_Tracker) ;
-- si WiFi OK et `!mqtt.connected()` : `mqttConnect()` au plus toutes les 5 s ; sinon `mqtt.loop()` ;
-- si `pendingRender` : sous `bsp_display_lock`, `ui_render(dashboard, time(nullptr))` ; si `pendingAlert != None` → `alertTriggered(pendingAlert)` (Task 14 ; pour l'instant un `Serial.println`) puis reset ;
-- toutes les secondes : `ui_tick(dashboard, time(nullptr), mqtt.connected())` sous lock.
+- Connexion : `WiFi.hostByName()` d'abord (DNS mis en cache par lwIP), `esp_task_wdt_reset()`, puis `mqtt.connect(DASH_MQTT_CLIENT_ID)` sans identifiant ni mot de passe, puis `mqtt.subscribe("claude-dash/+/state", 0)` (échec → `disconnect()`). Pire cas d'une tentative : TCP 5 s + TLS 8 s + CONNACK 5 s = 18 s < WDT. En cas d'échec : `rc` PubSubClient et `tls.lastError()` (code et texte mbedTLS) sur le port série. Le client id n'est jamais affiché au-delà de ses 8 premiers caractères. Heap interne libre et minimum (`heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)`) affichés une fois, à la première connexion TLS.
+- `loop()` non bloquante : `esp_task_wdt_reset()` ; WiFi relancé toutes les 10 s si perdu ; MQTT tenté seulement si WiFi OK, heure valide (> 1704067200, requise pour vérifier le certificat) et PEM valides, avec backoff exponentiel 5 s → 60 s (remis à 5 s après succès) ; `ui_render` seulement si `renderNeeded` ; alerte en attente → `Serial` pour l'instant (bip en Task 14) ; `ui_tick` chaque seconde. Tous les appels `ui_*` sous `bsp_display_lock(0)` / `bsp_display_unlock()`.
+- État MQTT suivi dans `mqttUp` (vrai après `mqttConnect()`, faux dès que `mqtt.loop()` renvoie `false`) : après un échec de connexion, `NetworkClientSecure::connected()` (appelé par `mqtt.connected()`) journalise `setSocketOption(): fail on 0, errno: 9` à chaque appel, soit ~36 lignes/s si on l'interroge à chaque tour de boucle.
+- `onMessage` : ignoré tant que l'heure n'est pas valide ; payload vide → hôte extrait du topic `claude-dash/<host>/state` puis `removeHost()` ; sinon `parseSnapshot()` + avertissement si `|time(nullptr) - ts| > 30 s` (« verifier NTP sur le serveur » : un décalage fait juger les snapshots périmés et rend l'écran muet) + `apply(snap, now, &changed)` ; `renderNeeded` seulement si `changed`.
 
-**Step 2: Compiler** — `$PIO run -e esp32s3` → SUCCESS.
+**Step 4: Vérifier.** `$PIO test -e native` (51 tests) ; `$PIO run -e esp32s3` → SUCCESS ; `$PIO check -e esp32s3 --skip-packages` → aucun défaut dans `src/main.cpp`, `src/ui.cpp`, `lib/dash_model`.
 
-**Step 3: Test de bout en bout avec le vrai broker**
+**Step 5: Test sur la carte.** Upload, puis capture série (`timeout 40 script -qfc "$PIO device monitor -e esp32s3" log < /dev/null`, jamais d'accès direct au port). Attendu : `WiFi connecte`, `NTP synchronise`, `MQTT connecte en ... ms`, `Abonne a claude-dash/+/state (QoS 0)`, `[TLS connecte] heap interne ...` ; écran : pastille verte, « En attente de donnees... » jusqu'au premier heartbeat. Puis, agent lancé sur le serveur : cartes affichées sous ~20 s. Si `MQTT echec rc=-2` : lire le texte mbedTLS (heure NTP, CA du hub, certificat/clé du device, filtres de messages du device dans la console Scaleway).
 
-Prérequis utilisateur : broker cloud créé, deux comptes/ACL, `credentials.h` et `~/.config/claude-dash/config.toml` renseignés (demander, ne pas inventer).
-
-1. Upload du firmware, puis `timeout 30 $PIO device monitor` → `MQTT connecte`.
-2. Depuis ce poste, publier un snapshot de test sur le broker cloud avec l'agent en mode dev (ou `mosquitto_sub/pub` en Docker avec `--cafile`/`-u`/`-P` du compte serveur) :
-   `docker run --rm eclipse-mosquitto:2 mosquitto_pub -h $HOST -p 8883 --capath /etc/ssl/certs -u $U -P $P -t claude-dash/test/state -r -m '{"host":"test","ts":...,"sessions":[...]}'`
-   (Si l'image n'a pas `/etc/ssl/certs`, monter celui de l'hôte : `-v /etc/ssl/certs:/etc/ssl/certs:ro`.)
-3. Vérifier : cartes affichées, pastille verte, heure.
-4. Couper le WiFi du routeur ou changer de topic → pastille rouge / bandeau après 3 min.
-
-Si `MQTT echec rc=-2` : vérifier heure NTP, CA, port ; tester la version TLS du broker (cf. `sketches/common/PRIM_TLS13_libs.md`).
-
-**Step 4: Commit**
-
-```bash
-git add $FW/src
-git commit -m "Claude_Dashboard: connexion WiFi, NTP et MQTT/TLS"
-```
+**Step 6: Commits.** « Claude_Dashboard: dash_model - detection de changement dans apply() » puis « Claude_Dashboard: connexion WiFi, NTP et MQTT mTLS (Scaleway IoT Hub) ».
 
 ---
 

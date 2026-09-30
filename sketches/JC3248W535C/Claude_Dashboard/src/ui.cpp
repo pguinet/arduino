@@ -1,6 +1,7 @@
 #include "ui.h"
 #include <lvgl.h>
 #include <stdio.h>
+#include <string.h>
 
 using namespace dash;
 
@@ -16,14 +17,27 @@ using namespace dash;
 
 // Au-dela de cette date (2024-01-01), l'horloge systeme est consideree synchronisee.
 static const time_t CLOCK_VALID_AFTER = 1704067200;
+// Au-dela, un libelle "+N autres sessions" : les lignes sont triees par urgence,
+// rien d'important n'est coupe, et on borne la memoire LVGL (~12 objets par carte).
+static const int MAX_CARDS = 16;
 
 static lv_obj_t *lblHost, *dotMqtt, *lblClock, *banner, *list, *lblEmpty;
 static lv_obj_t *bar5h, *pct5h, *reset5h, *bar7d, *pct7d, *reset7d;
 
 // Chronos des cartes, mis a jour chaque seconde sans reconstruire la liste
-static lv_obj_t *durLabels[MAX_ROWS];
-static int64_t durSince[MAX_ROWS];
+static lv_obj_t *durLabels[MAX_CARDS];
+static int64_t durSince[MAX_CARDS];
 static int durCount = 0;
+
+// Etat affiche par ui_tick : ne toucher aux objets que s'il change (sinon LVGL
+// redessine chaque seconde meme sans session).
+static int shownMqtt = -1;
+static int shownStale = -1;
+
+// N'invalide le label que si le texte change.
+static void setText(lv_obj_t *l, const char *text) {
+    if (strcmp(lv_label_get_text(l), text) != 0) lv_label_set_text(l, text);
+}
 
 static uint32_t stateColor(State s) {
     return s == State::Permission ? COLOR_PERM : s == State::Idle ? COLOR_IDLE : COLOR_WORKING;
@@ -186,7 +200,7 @@ static void addCard(const Row &r, bool showHost) {
 
     lv_obj_t *dur = mkLabel(card, &lv_font_montserrat_16, COLOR_TEXT);
     lv_obj_align(dur, LV_ALIGN_TOP_RIGHT, 0, 1);
-    if (durCount < MAX_ROWS) {
+    if (durCount < MAX_CARDS) {
         durLabels[durCount] = dur;
         durSince[durCount] = s.since;
         durCount++;
@@ -214,7 +228,12 @@ void ui_render(const Dashboard &d, time_t now, bool mqttOk) {
     durCount = 0;
     static Row rows[MAX_ROWS];  // static : evite ~400 o sur la pile de l'appelant
     int n = d.rows(rows, MAX_ROWS);
-    for (int i = 0; i < n; i++) addCard(rows[i], d.hostCount() > 1);
+    int shown = n < MAX_CARDS ? n : MAX_CARDS;
+    for (int i = 0; i < shown; i++) addCard(rows[i], d.hostCount() > 1);
+    if (n > shown) {
+        lv_obj_t *more = mkLabel(list, &lv_font_montserrat_14, COLOR_DIM);
+        lv_label_set_text_fmt(more, "+%d autres sessions", n - shown);
+    }
     lv_obj_update_layout(list);
     lv_obj_scroll_to_y(list, scroll, LV_ANIM_OFF);
 
@@ -227,32 +246,38 @@ void ui_render(const Dashboard &d, time_t now, bool mqttOk) {
 }
 
 void ui_tick(const Dashboard &d, time_t now, bool mqttOk) {
+    char buf[48];
     if (now > CLOCK_VALID_AFTER) {
         struct tm tm;
         localtime_r(&now, &tm);
-        lv_label_set_text_fmt(lblClock, "%02d:%02d", tm.tm_hour, tm.tm_min);
+        snprintf(buf, sizeof buf, "%02d:%02d", tm.tm_hour, tm.tm_min);
+        setText(lblClock, buf);
     }
 
-    lv_obj_set_style_bg_color(dotMqtt, lv_color_hex(mqttOk ? COLOR_OK : COLOR_PERM), 0);
+    if (shownMqtt != (int)mqttOk) {
+        shownMqtt = mqttOk;
+        lv_obj_set_style_bg_color(dotMqtt, lv_color_hex(mqttOk ? COLOR_OK : COLOR_PERM), 0);
+    }
 
-    char buf[16];
     for (int i = 0; i < durCount; i++) {
-        // since inconnu (0) ou horloge non synchronisee : pas de chrono absurde
         if (durSince[i] <= 0 || now <= CLOCK_VALID_AFTER) {
-            lv_label_set_text(durLabels[i], "");
+            setText(durLabels[i], "");
             continue;
         }
         formatDuration(now - durSince[i], buf, sizeof buf);
-        lv_label_set_text(durLabels[i], buf);
+        setText(durLabels[i], buf);
     }
 
     int64_t stale = d.hostCount() ? d.staleSeconds(now) : 0;
     bool isStale = stale > STALE_AFTER_S;
     if (isStale) {
-        lv_label_set_text_fmt(banner, "Serveur injoignable depuis %d min", (int)(stale / 60));
-        lv_obj_clear_flag(banner, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_obj_add_flag(banner, LV_OBJ_FLAG_HIDDEN);
+        snprintf(buf, sizeof buf, "Serveur injoignable depuis %d min", (int)(stale / 60));
+        setText(banner, buf);
     }
-    lv_obj_set_style_opa(list, isStale ? LV_OPA_50 : LV_OPA_COVER, 0);
+    if (shownStale != (int)isStale) {
+        shownStale = isStale;
+        if (isStale) lv_obj_clear_flag(banner, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(banner, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_opa(list, isStale ? LV_OPA_50 : LV_OPA_COVER, 0);
+    }
 }
