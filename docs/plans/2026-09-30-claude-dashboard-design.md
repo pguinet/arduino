@@ -60,8 +60,11 @@ Démon Python (`claude-dash-agent`, service systemd `--user`) :
 
 - surveille `~/.claude/dashboard/sessions/` ;
 - une seule connexion MQTT/TLS persistante (`paho-mqtt`) ;
-- publie un snapshot **retained** sur `claude-dash/<hostname>/state` à chaque
-  changement (au plus toutes les 2 s) et au moins toutes les 60 s (heartbeat) ;
+- publie un snapshot sur `claude-dash/<hostname>/state` à chaque changement (au
+  plus toutes les 2 s) et au moins toutes les 60 s (heartbeat réglable), **retained**
+  si le broker le permet ; avec Scaleway IoT Hub Shared (sans état, pas de retained)
+  : `retain = false` et heartbeat de 20 s, pour qu'un écran qui démarre reçoive
+  l'état rapidement ;
 - purge les sessions dont le PID n'existe plus ;
 - les quotas sont globaux au compte : on garde la valeur la plus récente reçue.
 
@@ -118,12 +121,16 @@ Paysage 480×320 (rotation 270°, comme Transit_Tracker), LVGL 8, Montserrat int
 ## Sécurité
 
 - TLS vérifié : CA racine du broker embarquée dans le firmware, pas de `setInsecure()`.
-- Deux comptes MQTT avec ACL : serveur = publication seule sur `claude-dash/<host>/#`,
-  écran = abonnement seul sur `claude-dash/#`.
+- Deux identités MQTT aux droits minimaux : serveur = publication seule sur
+  `claude-dash/<host>/#`, écran = abonnement seul sur `claude-dash/#`. Broker retenu,
+  Scaleway IoT Hub (plan Shared) : un device par rôle authentifié en **mTLS**
+  (certificat + clé générés par Scaleway, client id = Device ID), et des **filtres
+  de messages** par device à la place des ACL par compte.
 - Données publiées minimales : nom du dossier projet (pas le chemin), modèle, état,
   nom d'outil. Jamais de prompts ni de commandes.
 - Identifiants : `DASH_MQTT_*` dans `credentials.h` (+ placeholders dans
-  `credentials.h.example`) ; côté serveur `~/.config/claude-dash/config.toml` (chmod 600).
+  `credentials.h.example`) ; côté serveur `~/.config/claude-dash/config.toml` (chmod 600)
+  et, en mTLS, la clé privée du device à côté (chmod 600, vérifié par l'agent).
 - Broker cloud : vérifier le support de TLS 1.2 (ou utiliser les libs TLS 1.3
   recompilées, cf. `sketches/common/PRIM_TLS13_libs.md`).
 

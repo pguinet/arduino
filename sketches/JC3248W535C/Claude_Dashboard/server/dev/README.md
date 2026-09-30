@@ -27,6 +27,29 @@ Chaque étape affiche `PASS`/`FAIL` ; le code de sortie est non nul en cas
 d'échec et le journal de l'agent est alors affiché. Conteneurs et réseau sont
 supprimés à la sortie, même en cas d'erreur.
 
+## Test d'intégration mTLS sans retained (Scaleway IoT Hub Shared)
+
+```bash
+./dev/integration-test-mtls.sh       # depuis server/
+CLAUDE_DASH_MQTTS_PORT=8883 ./dev/integration-test-mtls.sh   # défaut 18883
+```
+
+Imite le plan Shared de Scaleway IoT Hub : une PKI jetable (CA, broker, clients
+« serveur » et « écran ») est générée par `openssl` dans un conteneur sous l'uid
+courant, dans un dossier `mktemp` supprimé à la sortie (jamais dans le dépôt).
+Mosquitto 2 écoute en TLS avec `require_certificate true` ; l'agent a `certfile`,
+`keyfile`, `client_id` = un UUID, `retain = false` et `heartbeat = 5`. Étapes :
+
+1. l'agent se connecte en mTLS avec le client id configuré (journal du broker) ;
+2. un abonné démarré avant le changement reçoit l'état `permission` en direct ;
+3. aucun message retained sur le broker (`mosquitto_sub --retained-only`) ;
+4. après une période d'inactivité, un nouvel abonné reçoit l'état par heartbeat
+   en moins de `heartbeat + 3` s ;
+5. un client sans certificat est refusé ;
+6. `SessionEnd` → `sessions` vide reçu en direct.
+
+Les fonctions communes aux deux scripts sont dans `dev/it-lib.sh`.
+
 ## Broker seul
 
 ```bash

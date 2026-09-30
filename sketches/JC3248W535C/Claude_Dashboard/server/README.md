@@ -24,16 +24,17 @@ Serveur Linux distant                                   Cloud            Maison
 - **`claude-dash-statusline`** : appelé par ta statusline, récupère modèle, contexte
   et quotas.
 - **`claude-dash-agent`** : démon qui agrège les sessions, purge celles dont le
-  processus `claude` a disparu et publie un snapshot retained sur
-  `claude-dash/<hostname>/state` (à chaque changement, au plus toutes les 2 s, et
-  au moins toutes les 60 s).
+  processus `claude` a disparu et publie un snapshot (retained si le broker le
+  permet) sur `claude-dash/<hostname>/state` (à chaque changement, au plus toutes
+  les 2 s, et au moins toutes les 60 s, réglable par `[agent] heartbeat`).
 
 ## Prérequis
 
 - Python ≥ 3.11 avec le module `venv` (Debian/Ubuntu : `apt install python3-venv`) ;
 - `jq` ;
 - `systemd --user` (pour le service) ;
-- un compte sur un broker MQTT joignable en TLS (HiveMQ Cloud, EMQX…).
+- un compte sur un broker MQTT joignable en TLS (HiveMQ Cloud, EMQX…) ou un
+  device Scaleway IoT Hub (voir « Scaleway IoT Hub (plan Shared) »).
 
 Aucun `sudo` n'est nécessaire.
 
@@ -154,6 +155,13 @@ topic_prefix = "claude-dash"
   défaut c'est le nom court de la machine ; si deux serveurs partagent le même,
   renseigne `[agent] hostname` sur l'un d'eux (`A-Z a-z 0-9 . _ -`, 32 max).
 - `tls = false` n'est prévu que pour un Mosquitto local de test (`dev/`).
+- Options facultatives de `[mqtt]` : `client_id` (remplace `claude-dash-<hostname>`,
+  sans espace, 64 max), `certfile` + `keyfile` (certificat client mTLS, les deux
+  ensemble, `tls = true` obligatoire, clé privée en **chmod 600** sinon l'agent
+  refuse de démarrer), `retain` (défaut `true`). `[agent] heartbeat` : republication
+  minimale en secondes (défaut 60, de 5 à 170 pour rester sous le seuil de 180 s
+  au-delà duquel l'écran affiche « Serveur injoignable »). `~` est développé dans
+  `ca_certs`, `certfile` et `keyfile`.
 - Emplacement fixe : `~/.config/claude-dash/config.toml` (voir « Installation »).
 - Une config invalide fait sortir l'agent avec le code 2 : le service n'est alors pas
   relancé en boucle (`RestartPreventExitStatus=2`) ; corrige puis
@@ -171,6 +179,54 @@ Un compte par rôle, avec les droits minimaux :
 Ainsi, un mot de passe serveur compromis ne permet pas d'usurper un autre serveur,
 et celui stocké dans l'écran ne permet pas de publier de faux états.
 
+### Scaleway IoT Hub (plan Shared)
+
+Le plan gratuit Shared authentifie chaque device par **certificat client (mTLS)** :
+pas de mot de passe, et le client id MQTT **doit** être le Device ID (UUID).
+
+1. Dans la console, crée un hub (plan Shared) puis **deux devices** : `serveur` (un
+   par serveur si tu en as plusieurs) et `ecran`.
+2. Pour chacun, télécharge le certificat et la clé privée générés par Scaleway
+   (garde-les : en cas de perte, il faut renouveler le certificat du device) ;
+   télécharge aussi le **certificat CA du hub** (page d'accueil du hub).
+3. Sur le serveur, range les fichiers du device `serveur` :
+   ```bash
+   mkdir -p ~/.config/claude-dash && chmod 700 ~/.config/claude-dash
+   mv hub-ca.pem serveur.crt serveur.key ~/.config/claude-dash/
+   chmod 600 ~/.config/claude-dash/serveur.key
+   ```
+   Le certificat et la clé de l'`ecran` vont dans `credentials.h` du firmware.
+4. **Filtres de messages** (ils remplacent les ACL par compte) :
+
+   | Device | Publish | Subscribe |
+   |---|---|---|
+   | serveur | autoriser `claude-dash/#`, refuser le reste | tout refuser |
+   | ecran | tout refuser | autoriser `claude-dash/#`, refuser le reste |
+
+5. Config (bloc d'exemple en fin de `config.toml.example`) :
+   ```toml
+   [mqtt]
+   host = "iot.fr-par.scw.cloud"          # voir la console
+   port = 8883
+   tls = true
+   ca_certs = "~/.config/claude-dash/hub-ca.pem"
+   certfile = "~/.config/claude-dash/serveur.crt"
+   keyfile = "~/.config/claude-dash/serveur.key"
+   client_id = "<Device ID>"
+   retain = false
+   topic_prefix = "claude-dash"
+
+   [agent]
+   heartbeat = 20
+   ```
+
+Pourquoi `retain = false` et `heartbeat = 20` : le plan Shared est **sans état**
+(pas de messages retained, pas de sessions persistantes, pas de publish QoS 2 ni de
+subscribe QoS 1-2 ; le publish QoS 1 de l'agent est accepté). Un écran qui démarre
+ne reçoit donc rien avant la prochaine publication : un heartbeat de 20 s borne
+cette attente. Le **nom d'hôte** reste utilisé dans le topic : il doit toujours
+être unique entre tes serveurs.
+
 ## Dépannage
 
 ```bash
@@ -184,6 +240,10 @@ ls ~/.claude/dashboard/sessions/        # état brut des sessions
 
 - `config.toml doit être en chmod 600` : `chmod 600 ~/.config/claude-dash/config.toml`.
 - `MQTT refusé (Not authorized)` : identifiants ou ACL du broker.
+- Scaleway : sans message retained, `mosquitto_sub` attend le prochain heartbeat
+  (ajoute `--cafile hub-ca.pem --cert ecran.crt --key ecran.key -i <Device ID écran>`
+  au lieu de `-u`/`-P`). `keyfile ... doit être en chmod 600` :
+  `chmod 600 ~/.config/claude-dash/*.key`.
 - Rien dans le journal après un redémarrage de session SSH : `loginctl enable-linger`.
 - Session fantôme sur l'écran : elle disparaît dès que le processus `claude` est
   mort (vérifié chaque seconde).
@@ -207,6 +267,7 @@ config (`~/.config/claude-dash/`, qui contient le mot de passe), l'état des ses
 ```bash
 ./run-checks.sh              # ruff, mypy, pytest (Docker)
 ./dev/integration-test.sh    # chaîne complète avec un Mosquitto local (Docker)
+./dev/integration-test-mtls.sh  # idem en mTLS sans retained (imite Scaleway Shared)
 ./dev/test-install.sh        # install.sh dans un conteneur jetable (HOME fictif)
 CLAUDE_DASH_EXTRA_SETTINGS=~/.claude/settings.json ./dev/test-install.sh
                              # + fusion sur une copie en lecture seule de ton settings.json
