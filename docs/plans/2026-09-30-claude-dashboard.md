@@ -1753,8 +1753,11 @@ git commit -m "Claude_Dashboard: squelette PlatformIO JC3248 (drivers ecran)"
 
 **Step 1: Tests Unity**
 
+(Écart par rapport à la première version du plan : tests défensifs ajoutés — types JSON erronés, host non-chaîne, `sessions` non-tableau, pourcentages bornés, sortie intacte en cas d'échec ; buffer du test de troncature agrandi à 8 Ko avec vérification qu'il n'est pas tronqué.)
+
 ```cpp
 #include <unity.h>
+#include <stdio.h>
 #include <string.h>
 #include "dash_model.h"
 
@@ -1776,15 +1779,21 @@ void test_parse_full() {
     HostSnapshot s;
     TEST_ASSERT_TRUE(parseSnapshot(SAMPLE, strlen(SAMPLE), s));
     TEST_ASSERT_EQUAL_STRING("srv", s.host);
+    TEST_ASSERT_EQUAL(1000, (long)s.ts);
     TEST_ASSERT_EQUAL(42, s.limits.h5);
     TEST_ASSERT_EQUAL(4600, (long)s.limits.h5Reset);
     TEST_ASSERT_EQUAL(18, s.limits.d7);
+    TEST_ASSERT_EQUAL(90000, (long)s.limits.d7Reset);
     TEST_ASSERT_EQUAL(2, s.count);
+    TEST_ASSERT_EQUAL_STRING("a1", s.sessions[0].id);
     TEST_ASSERT_EQUAL_STRING("arduino", s.sessions[0].project);
+    TEST_ASSERT_EQUAL_STRING("Opus 5.5", s.sessions[0].model);
     TEST_ASSERT_EQUAL((int)State::Permission, (int)s.sessions[0].state);
+    TEST_ASSERT_EQUAL(950, (long)s.sessions[0].since);
     TEST_ASSERT_EQUAL(37, s.sessions[0].ctx);
     TEST_ASSERT_EQUAL_STRING("Bash", s.sessions[0].tool);
-    TEST_ASSERT_EQUAL(-1, s.sessions[1].ctx);        // absent
+    TEST_ASSERT_EQUAL((int)State::Idle, (int)s.sessions[1].state);
+    TEST_ASSERT_EQUAL(-1, s.sessions[1].ctx);  // absent
     TEST_ASSERT_EQUAL_STRING("", s.sessions[1].tool);
 }
 
@@ -1793,6 +1802,7 @@ void test_parse_no_limits() {
     HostSnapshot s;
     TEST_ASSERT_TRUE(parseSnapshot(j, strlen(j), s));
     TEST_ASSERT_EQUAL(-1, s.limits.h5);
+    TEST_ASSERT_EQUAL(-1, s.limits.d7);
     TEST_ASSERT_EQUAL(0, s.count);
 }
 
@@ -1807,18 +1817,32 @@ void test_parse_missing_host() {
     TEST_ASSERT_FALSE(parseSnapshot(j, strlen(j), s));
 }
 
-void test_parse_truncates_long_strings_and_caps_sessions() {
-    char buf[4096];
-    int n = snprintf(buf, sizeof buf, "{\"host\":\"h\",\"ts\":1,\"sessions\":[");
-    for (int i = 0; i < 20; i++)
-        n += snprintf(buf + n, sizeof buf - n,
-                      "%s{\"id\":\"s%d\",\"project\":\"%s\",\"state\":\"working\",\"since\":1}",
-                      i ? "," : "", i, "pppppppppppppppppppppppppppppppppppppppppppppp");
-    snprintf(buf + n, sizeof buf - n, "]}");
+void test_parse_failure_leaves_output_untouched() {
     HostSnapshot s;
-    TEST_ASSERT_TRUE(parseSnapshot(buf, strlen(buf), s));
+    strcpy(s.host, "keep");
+    s.count = 3;
+    TEST_ASSERT_FALSE(parseSnapshot("{oops", 5, s));
+    TEST_ASSERT_EQUAL_STRING("keep", s.host);
+    TEST_ASSERT_EQUAL(3, s.count);
+}
+
+void test_parse_truncates_long_strings_and_caps_sessions() {
+    static const char LONG[] = "pppppppppppppppppppppppppppppppppppppppppppppp";  // 46 > 32
+    char buf[8192];
+    size_t n = (size_t)snprintf(buf, sizeof buf, "{\"host\":\"h\",\"ts\":1,\"sessions\":[");
+    for (int i = 0; i < 20; i++)
+        n += (size_t)snprintf(buf + n, sizeof buf - n,
+                              "%s{\"id\":\"s%d\",\"project\":\"%s\",\"state\":\"working\",\"since\":1}",
+                              i ? "," : "", i, LONG);
+    n += (size_t)snprintf(buf + n, sizeof buf - n, "]}");
+    TEST_ASSERT_TRUE_MESSAGE(n < sizeof buf, "buffer de test trop petit");
+
+    HostSnapshot s;
+    TEST_ASSERT_TRUE(parseSnapshot(buf, n, s));
     TEST_ASSERT_EQUAL(MAX_SESSIONS, s.count);
+    TEST_ASSERT_EQUAL_STRING("s11", s.sessions[MAX_SESSIONS - 1].id);
     TEST_ASSERT_EQUAL(sizeof(s.sessions[0].project) - 1, strlen(s.sessions[0].project));
+    TEST_ASSERT_EQUAL(0, strncmp(LONG, s.sessions[0].project, sizeof(s.sessions[0].project) - 1));
 }
 
 void test_unknown_state_maps_to_idle() {
@@ -1828,14 +1852,59 @@ void test_unknown_state_maps_to_idle() {
     TEST_ASSERT_EQUAL((int)State::Idle, (int)s.sessions[0].state);
 }
 
+void test_wrong_types_are_ignored() {
+    // Valeurs de mauvais type : chaines vides / valeurs par defaut, sans planter.
+    const char *j =
+        "{\"host\":\"h\",\"ts\":\"x\",\"limits\":{\"h5\":\"a\",\"d7\":[1]},"
+        "\"sessions\":[{\"id\":7,\"project\":123,\"model\":null,\"state\":5,"
+        "\"since\":\"z\",\"ctx\":{},\"tool\":true}]}";
+    HostSnapshot s;
+    TEST_ASSERT_TRUE(parseSnapshot(j, strlen(j), s));
+    TEST_ASSERT_EQUAL(0, (long)s.ts);
+    TEST_ASSERT_EQUAL(-1, s.limits.h5);
+    TEST_ASSERT_EQUAL(-1, s.limits.d7);
+    TEST_ASSERT_EQUAL(1, s.count);
+    TEST_ASSERT_EQUAL_STRING("", s.sessions[0].id);
+    TEST_ASSERT_EQUAL_STRING("", s.sessions[0].project);
+    TEST_ASSERT_EQUAL_STRING("", s.sessions[0].model);
+    TEST_ASSERT_EQUAL_STRING("", s.sessions[0].tool);
+    TEST_ASSERT_EQUAL((int)State::Idle, (int)s.sessions[0].state);
+    TEST_ASSERT_EQUAL(0, (long)s.sessions[0].since);
+    TEST_ASSERT_EQUAL(-1, s.sessions[0].ctx);
+}
+
+void test_host_not_string_or_sessions_not_array() {
+    const char *j1 = "{\"host\":42,\"ts\":1,\"sessions\":[]}";
+    HostSnapshot s;
+    TEST_ASSERT_FALSE(parseSnapshot(j1, strlen(j1), s));
+    const char *j2 = "{\"host\":\"h\",\"ts\":1,\"sessions\":{\"id\":\"x\"}}";
+    TEST_ASSERT_TRUE(parseSnapshot(j2, strlen(j2), s));
+    TEST_ASSERT_EQUAL(0, s.count);
+}
+
+void test_percentages_clamped() {
+    const char *j =
+        "{\"host\":\"h\",\"ts\":1,\"limits\":{\"h5\":250,\"d7\":-40},"
+        "\"sessions\":[{\"id\":\"x\",\"state\":\"idle\",\"since\":1,\"ctx\":999}]}";
+    HostSnapshot s;
+    TEST_ASSERT_TRUE(parseSnapshot(j, strlen(j), s));
+    TEST_ASSERT_EQUAL(100, s.limits.h5);
+    TEST_ASSERT_EQUAL(-1, s.limits.d7);
+    TEST_ASSERT_EQUAL(100, s.sessions[0].ctx);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_parse_full);
     RUN_TEST(test_parse_no_limits);
     RUN_TEST(test_parse_invalid_json);
     RUN_TEST(test_parse_missing_host);
+    RUN_TEST(test_parse_failure_leaves_output_untouched);
     RUN_TEST(test_parse_truncates_long_strings_and_caps_sessions);
     RUN_TEST(test_unknown_state_maps_to_idle);
+    RUN_TEST(test_wrong_types_are_ignored);
+    RUN_TEST(test_host_not_string_or_sessions_not_array);
+    RUN_TEST(test_percentages_clamped);
     return UNITY_END();
 }
 ```
@@ -1865,7 +1934,7 @@ enum class State : uint8_t { Working, Idle, Permission };
 enum class Alert : uint8_t { None, Idle, Permission };
 
 struct Limits {
-    int h5 = -1;
+    int h5 = -1;  // pourcentage 0..100, -1 si inconnu
     int64_t h5Reset = 0;
     int d7 = -1;
     int64_t d7Reset = 0;
@@ -1878,7 +1947,7 @@ struct Session {
     char tool[25] = "";
     State state = State::Idle;
     int64_t since = 0;
-    int ctx = -1;
+    int ctx = -1;  // pourcentage 0..100, -1 si inconnu
 };
 
 struct HostSnapshot {
@@ -1889,12 +1958,14 @@ struct HostSnapshot {
     int count = 0;
 };
 
-// Ligne affichable : une session et l'index de son hote
+// Ligne affichable : une session et le nom de son hote
 struct Row {
     const Session *session;
     const char *host;
 };
 
+// Parse un snapshot JSON. En cas d'echec (JSON invalide, host absent),
+// retourne false et laisse `out` intact.
 bool parseSnapshot(const char *json, size_t len, HostSnapshot &out);
 
 class Dashboard {
@@ -1943,6 +2014,7 @@ bool screenShouldBeOn(bool anyWaiting, uint32_t nowMs, uint32_t lastActivityMs,
 
 namespace dash {
 
+// Copie tronquee ; nullptr (absent ou pas une chaine) -> ""
 static void copyStr(char *dst, size_t size, const char *src) {
     if (!src) src = "";
     strncpy(dst, src, size - 1);
@@ -1955,6 +2027,20 @@ static State parseState(const char *s) {
     return State::Idle;
 }
 
+// Pourcentage 0..100 ; absent, pas un entier ou negatif -> -1
+static int parsePercent(JsonVariantConst v) {
+    if (!v.is<int>()) return -1;
+    int p = v.as<int>();
+    if (p < 0) return -1;
+    return p > 100 ? 100 : p;
+}
+
+// Epoch en secondes ; absent, pas un entier ou negatif -> 0
+static int64_t parseEpoch(JsonVariantConst v) {
+    int64_t t = v | (int64_t)0;
+    return t < 0 ? 0 : t;
+}
+
 bool parseSnapshot(const char *json, size_t len, HostSnapshot &out) {
     JsonDocument doc;
     if (deserializeJson(doc, json, len)) return false;
@@ -1963,14 +2049,14 @@ bool parseSnapshot(const char *json, size_t len, HostSnapshot &out) {
 
     out = HostSnapshot();
     copyStr(out.host, sizeof out.host, host);
-    out.ts = doc["ts"] | (int64_t)0;
+    out.ts = parseEpoch(doc["ts"]);
 
     JsonObjectConst lim = doc["limits"];
     if (!lim.isNull()) {
-        out.limits.h5 = lim["h5"] | -1;
-        out.limits.h5Reset = lim["h5_reset"] | (int64_t)0;
-        out.limits.d7 = lim["d7"] | -1;
-        out.limits.d7Reset = lim["d7_reset"] | (int64_t)0;
+        out.limits.h5 = parsePercent(lim["h5"]);
+        out.limits.h5Reset = parseEpoch(lim["h5_reset"]);
+        out.limits.d7 = parsePercent(lim["d7"]);
+        out.limits.d7Reset = parseEpoch(lim["d7_reset"]);
     }
 
     for (JsonObjectConst js : doc["sessions"].as<JsonArrayConst>()) {
@@ -1981,16 +2067,18 @@ bool parseSnapshot(const char *json, size_t len, HostSnapshot &out) {
         copyStr(s.model, sizeof s.model, js["model"]);
         copyStr(s.tool, sizeof s.tool, js["tool"]);
         s.state = parseState(js["state"]);
-        s.since = js["since"] | (int64_t)0;
-        s.ctx = js["ctx"] | -1;
+        s.since = parseEpoch(js["since"]);
+        s.ctx = parsePercent(js["ctx"]);
     }
     return true;
 }
 
+// ... stubs des Tasks 10-11 ...
+
 }  // namespace dash
 ```
 
-**Step 5: Vérifier** — `$PIO test -e native -f test_parse` → 6 tests PASS.
+**Step 5: Vérifier** — `$PIO test -e native -f test_parse` → 10 tests PASS.
 
 **Step 6: Commit**
 
