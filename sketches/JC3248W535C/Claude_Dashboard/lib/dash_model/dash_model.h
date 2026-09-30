@@ -86,8 +86,8 @@ private:
 };
 
 // Helpers d'affichage
-void formatDuration(int64_t seconds, char *out, size_t size);  // "0:42", "5:10", "1h05", "2j"
-uint32_t colorForPercent(int pct);                             // vert / orange / rouge
+void formatDuration(int64_t seconds, char *out, size_t size);  // "0:42", "5:10", "1h05", "2j", "999j+"
+uint32_t colorForPercent(int pct);  // vert < 60 / orange < 85 / rouge (pct < 0 : vert, a eviter)
 const char *stateLabel(State s);                                // "TRAVAILLE", "ATTENTE", "PERMISSION"
 
 // Veille : ecran allume si une session attend, ou activite recente (ms).

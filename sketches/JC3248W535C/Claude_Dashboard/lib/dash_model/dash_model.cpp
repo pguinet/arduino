@@ -199,16 +199,44 @@ bool Dashboard::anyWaiting() const {
     return false;
 }
 
-// --- Stubs : implementes par la Task 11 (helpers) ---
+// --- Helpers d'affichage et veille ---
 
-void formatDuration(int64_t, char *out, size_t size) {
-    if (size) out[0] = '\0';
+// Au-dela de 999 jours (since aberrant : 0, horloge non synchronisee), on
+// affiche "999j+" : borne aussi les casts en int.
+constexpr int64_t MAX_DAYS = 999;
+
+void formatDuration(int64_t s, char *out, size_t size) {
+    if (size == 0) return;
+    if (s < 0) s = 0;
+    if (s < 3600)
+        snprintf(out, size, "%d:%02d", (int)(s / 60), (int)(s % 60));
+    else if (s < 86400)
+        snprintf(out, size, "%dh%02d", (int)(s / 3600), (int)(s % 3600 / 60));
+    else if (s / 86400 <= MAX_DAYS)
+        snprintf(out, size, "%dj", (int)(s / 86400));
+    else
+        snprintf(out, size, "%dj+", (int)MAX_DAYS);
 }
 
-uint32_t colorForPercent(int) { return 0; }
+// Memes seuils que la statusline du terminal : vert < 60, orange < 85, rouge.
+uint32_t colorForPercent(int pct) {
+    if (pct < 60) return 0x4caf50;
+    if (pct < 85) return 0xfca311;
+    return 0xf72585;
+}
 
-const char *stateLabel(State) { return ""; }
+const char *stateLabel(State s) {
+    switch (s) {
+        case State::Permission: return "PERMISSION";
+        case State::Idle: return "ATTENTE";
+        default: return "TRAVAILLE";
+    }
+}
 
-bool screenShouldBeOn(bool, uint32_t, uint32_t, uint32_t) { return true; }
+// Difference en uint32_t : correcte au debordement de millis() (~49 j).
+bool screenShouldBeOn(bool anyWaiting, uint32_t nowMs, uint32_t lastActivityMs,
+                      uint32_t timeoutMs) {
+    return anyWaiting || (uint32_t)(nowMs - lastActivityMs) < timeoutMs;
+}
 
 }  // namespace dash

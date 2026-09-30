@@ -2745,7 +2745,8 @@ void formatDuration(int64_t s, char *out, size_t size) {
     if (s < 0) s = 0;
     if (s < 3600) snprintf(out, size, "%d:%02d", (int)(s / 60), (int)(s % 60));
     else if (s < 86400) snprintf(out, size, "%dh%02d", (int)(s / 3600), (int)(s % 3600 / 60));
-    else snprintf(out, size, "%dj", (int)(s / 86400));
+    else if (s / 86400 <= 999) snprintf(out, size, "%dj", (int)(s / 86400));
+    else snprintf(out, size, "999j+");  // since aberrant : borne aussi les casts int
 }
 
 uint32_t colorForPercent(int pct) {
@@ -2767,6 +2768,13 @@ bool screenShouldBeOn(bool anyWaiting, uint32_t nowMs, uint32_t lastActivityMs,
     return anyWaiting || (uint32_t)(nowMs - lastActivityMs) < timeoutMs;
 }
 ```
+
+**Écarts à l'implémentation :** `formatDuration` borne l'affichage à `999j+`
+(sinon `(int)(s / 86400)` déborde pour un `since` aberrant, ex. `INT64_MAX`) et
+ne fait rien si `size == 0`. Tests ajoutés : bornes 3600/86399/86400, `999j`/`999j+`
+/`INT64_MAX`/`INT64_MIN`, petit buffer (troncature snprintf), couleur à 100,
+veille après débordement et timeout explicite. `colorForPercent(-1)` reste vert
+(comportement du plan) : les appelants testent `< 0` (inconnu) avant.
 
 **Step 4: Vérifier** — `$PIO test -e native` → tout PASS.
 
