@@ -30,6 +30,7 @@
 #include "beep.h"
 #include "dash_model.h"
 #include "ui.h"
+#include "wifi_pick.h"
 
 // Modele : sketches/common/credentials.h.example
 #ifndef WIFI_SSID
@@ -37,6 +38,10 @@
 #endif
 #ifndef WIFI_PASSWORD
 #error "credentials.h : WIFI_PASSWORD manquant (voir sketches/common/credentials.h.example)"
+#endif
+#if defined(WIFI_SSID_2) != defined(WIFI_PASSWORD_2) || defined(WIFI_SSID_3) != defined(WIFI_PASSWORD_3) \
+    || defined(WIFI_SSID_4) != defined(WIFI_PASSWORD_4)
+#error "credentials.h : chaque WIFI_SSID_n doit avoir son WIFI_PASSWORD_n"
 #endif
 #ifndef DASH_MQTT_SERVER
 #error "credentials.h : DASH_MQTT_SERVER manquant (voir sketches/common/credentials.h.example)"
@@ -61,6 +66,8 @@
 #define MQTT_TOPIC           "claude-dash/+/state"
 #define MQTT_BUFFER_SIZE     4096
 #define WIFI_FORCE_AFTER_MS  30000UL   // reconnexion forcee apres 30 s sans WiFi
+#define WIFI_SCAN_TIMEOUT_MS 15000UL   // scan asynchrone abandonne au-dela
+#define WIFI_SCAN_MAX        32        // reseaux visibles examines au plus
 #define MQTT_RETRY_MIN_MS    5000UL
 #define MQTT_RETRY_MAX_MS    60000UL
 #define CLOCK_SKEW_WARN_S    30
@@ -270,8 +277,73 @@ static bool mqttConnect()
     return true;
 }
 
-// La reconnexion automatique du driver fait l'essentiel ; on ne relance
-// disconnect()/begin() qu'apres 30 s continues sans WiFi (y compris au demarrage).
+// Reseaux connus, par ordre de priorite : le premier visible au scan gagne
+// (l'ecran change de site, pas de course au meilleur signal).
+static const wifi::Network WIFI_NETWORKS[] = {
+    {WIFI_SSID, WIFI_PASSWORD},
+#ifdef WIFI_SSID_2
+    {WIFI_SSID_2, WIFI_PASSWORD_2},
+#endif
+#ifdef WIFI_SSID_3
+    {WIFI_SSID_3, WIFI_PASSWORD_3},
+#endif
+#ifdef WIFI_SSID_4
+    {WIFI_SSID_4, WIFI_PASSWORD_4},
+#endif
+};
+static constexpr int WIFI_NETWORK_COUNT = sizeof(WIFI_NETWORKS) / sizeof(WIFI_NETWORKS[0]);
+
+static bool wifiScanning = false;
+static uint32_t wifiScanStartMs = 0;
+
+// Un seul reseau : begin() direct (marche aussi avec un SSID cache). Sinon scan
+// asynchrone, conclu par pollWifiScan() ; en cas d'echec, le cycle de 30 s de
+// handleWifi() relance.
+static void startWifi(uint32_t ms)
+{
+    if (WIFI_NETWORK_COUNT == 1) {
+        WiFi.begin(WIFI_NETWORKS[0].ssid, WIFI_NETWORKS[0].password);
+        return;
+    }
+    if (WiFi.scanNetworks(true) == WIFI_SCAN_FAILED) {
+        Serial.println("Scan WiFi impossible");
+        return;
+    }
+    wifiScanning = true;
+    wifiScanStartMs = ms;
+    Serial.println("Scan WiFi...");
+}
+
+static void pollWifiScan(uint32_t ms)
+{
+    int16_t n = WiFi.scanComplete();
+    if (n == WIFI_SCAN_RUNNING && ms - wifiScanStartMs < WIFI_SCAN_TIMEOUT_MS) return;
+    wifiScanning = false;
+    if (n < 0) {
+        Serial.println(n == WIFI_SCAN_RUNNING ? "Scan WiFi trop long : abandon" : "Scan WiFi en echec");
+        WiFi.scanDelete();
+        return;
+    }
+    int count = n < WIFI_SCAN_MAX ? n : WIFI_SCAN_MAX;
+    String names[WIFI_SCAN_MAX];
+    const char *visible[WIFI_SCAN_MAX] = {};
+    for (int i = 0; i < count; i++) {
+        names[i] = WiFi.SSID(i);
+        visible[i] = names[i].c_str();
+    }
+    WiFi.scanDelete();
+    int k = wifi::pickFirstVisible(WIFI_NETWORKS, WIFI_NETWORK_COUNT, visible, count);
+    if (k < 0) {
+        Serial.printf("Aucun reseau connu parmi %d visibles\n", n);
+        return;
+    }
+    Serial.printf("Reseau connu trouve : %s\n", WIFI_NETWORKS[k].ssid);
+    WiFi.begin(WIFI_NETWORKS[k].ssid, WIFI_NETWORKS[k].password);
+}
+
+// La reconnexion automatique du driver (sur le reseau choisi) fait l'essentiel ;
+// on ne relance disconnect() + startWifi() (nouveau choix de reseau) qu'apres
+// 30 s continues sans WiFi, y compris au demarrage.
 static void handleWifi(uint32_t ms)
 {
     static uint32_t downSince = 0;  // debut de la coupure (0 = demarrage)
@@ -279,15 +351,19 @@ static void handleWifi(uint32_t ms)
     bool connected = WiFi.status() == WL_CONNECTED;
     if (connected != wasConnected) {
         wasConnected = connected;
-        if (connected) Serial.printf("WiFi connecte, IP %s\n", WiFi.localIP().toString().c_str());
+        if (connected) Serial.printf("WiFi connecte a %s, IP %s\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
         else Serial.println("WiFi perdu");
         downSince = ms;
+    }
+    if (wifiScanning) {
+        pollWifiScan(ms);
+        return;
     }
     if (!connected && ms - downSince >= WIFI_FORCE_AFTER_MS) {
         downSince = ms;
         Serial.println("WiFi absent depuis 30 s : reconnexion forcee");
         WiFi.disconnect();
-        WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+        startWifi(ms);
     }
 }
 
@@ -449,7 +525,7 @@ void setup()
 
     // WiFi et NTP non bloquants : loop() suit la connexion.
     WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    startWifi(millis());
     configTzTime(TZ_PARIS, "pool.ntp.org", "time.google.com");
 
     credentialsOk = checkCredentials();
