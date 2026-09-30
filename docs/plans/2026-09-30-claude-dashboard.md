@@ -1129,7 +1129,7 @@ def build_snapshot(
     return snap, [str(x["id"]) for x in dead]
 ```
 
-> **Écart implémenté :** lectures numériques défensives (`_as_int` : 0 si valeur non numérique ou bool) pour `since`/`updated`, `pid`/`ctx` bool ignorés, `alive`/`dead` annotés (mypy strict). Deux tests en plus : valeurs corrompues (pas de crash) et `updated` corrompu sans pid (session morte).
+> **Écart implémenté (revue) :** valeurs bornées — `_as_int` renvoie 0 pour bool, non-numérique, NaN/inf ; un `pid` n'est pris en compte que s'il est int (pas bool) et dans `1..4_194_304` (sinon règle des 12 h ; évite `kill(-1, 0)`) ; `ctx`, `h5`, `d7` bornés à 0..100 ; `limits` : entiers uniquement, `dict` vérifié ; éléments non-dict ignorés. Texte via `_text` (NFKD → ASCII imprimable, puis troncature ; non-str → défaut, `"?"` pour `project`), `host` limité à 32 : pas d'échappement `\uXXXX`, payload max mesuré ≈ 2,3 Ko pour 12 sessions (≈ 3,3 Ko si tout le texte est en `"`/`\`), sous le buffer MQTT 4 Ko de l'ESP32. Tests en plus : valeurs corrompues/non finies, pid hors bornes, ASCII, taille du payload, confidentialité, troncature 24, les 4 clés `limits`.
 
 **Step 4: Vérifier** — tout passe.
 

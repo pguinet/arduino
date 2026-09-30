@@ -78,7 +78,7 @@ Démon Python (`claude-dash-agent`, service systemd `--user`) :
 }
 ```
 
-Taille < 2 Ko pour une dizaine de sessions. Le JC3248 s'abonne à `claude-dash/+/state`
+Taille < 2,5 Ko pour 12 sessions (texte ramené en ASCII). Le JC3248 s'abonne à `claude-dash/+/state`
 (plusieurs serveurs possibles).
 
 ## Écran (JC3248)
