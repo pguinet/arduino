@@ -1,4 +1,5 @@
 #include <unity.h>
+#include <stdio.h>
 #include <string.h>
 #include "dash_model.h"
 
@@ -214,6 +215,113 @@ void test_any_waiting() {
     TEST_ASSERT_TRUE(d.anyWaiting());
 }
 
+void test_alert_idle_after_permission() {
+    Dashboard d;
+    const char *ids[] = {"a"};
+    State p[] = {State::Permission}, i[] = {State::Idle};
+    int64_t since[] = {10};
+    d.apply(mk("h", 1, ids, p, since), 100);
+    TEST_ASSERT_EQUAL((int)Alert::Idle, (int)d.apply(mk("h", 1, ids, i, since), 102));
+}
+
+void test_session_gone_then_back_no_alert() {
+    // une session absente du snapshot precedent est traitee comme nouvelle
+    Dashboard d;
+    const char *ids[] = {"a"};
+    State w[] = {State::Working}, p[] = {State::Permission};
+    int64_t t[] = {1};
+    d.apply(mk("h", 1, ids, w, t), 100);
+    d.apply(mk("h", 0, ids, w, t), 102);
+    TEST_ASSERT_EQUAL((int)Alert::None, (int)d.apply(mk("h", 1, ids, p, t), 104));
+}
+
+void test_limits_skip_host_without_limits() {
+    Dashboard d;
+    HostSnapshot s;
+    strcpy(s.host, "old");
+    s.ts = 100;
+    s.limits.d7 = 30;
+    d.apply(s, 100);
+    HostSnapshot n;
+    strcpy(n.host, "new");
+    n.ts = 200;  // plus recent, mais sans quotas
+    d.apply(n, 200);
+    TEST_ASSERT_NOT_NULL(d.limits());
+    TEST_ASSERT_EQUAL(30, d.limits()->d7);
+}
+
+// Remplit le tableau de bord avec MAX_HOSTS hotes "h0".."h3" de ts donnes.
+static void fillHosts(Dashboard &d, const int64_t ts[MAX_HOSTS], int64_t now) {
+    for (int i = 0; i < MAX_HOSTS; i++) {
+        HostSnapshot s;
+        snprintf(s.host, sizeof s.host, "h%d", i);
+        s.ts = ts[i];
+        d.apply(s, now);
+    }
+}
+
+void test_extra_host_ignored_when_none_evictable() {
+    static Dashboard d;  // ~5.6 Ko : hors pile
+    const int64_t now = 100000;
+    const int64_t ts[MAX_HOSTS] = {now, now - 60, now - EVICT_AFTER_S, now - 10};
+    fillHosts(d, ts, now);
+    HostSnapshot s;
+    strcpy(s.host, "extra");
+    s.ts = now;
+    TEST_ASSERT_EQUAL((int)Alert::None, (int)d.apply(s, now));
+    TEST_ASSERT_EQUAL(MAX_HOSTS, d.hostCount());
+    for (int i = 0; i < MAX_HOSTS; i++) TEST_ASSERT_NOT_EQUAL(0, strcmp("extra", d.hostName(i)));
+}
+
+void test_extra_host_evicts_oldest_dead_host() {
+    static Dashboard d;  // ~5.6 Ko : hors pile
+    const int64_t now = 100000;
+    // h1 et h2 morts depuis plus de 6 h ; h2 est le plus vieux
+    const int64_t ts[MAX_HOSTS] = {now, now - EVICT_AFTER_S - 10, now - EVICT_AFTER_S - 500, now};
+    fillHosts(d, ts, now);
+    HostSnapshot s;
+    strcpy(s.host, "extra");
+    s.ts = now;
+    d.apply(s, now);
+    TEST_ASSERT_EQUAL(MAX_HOSTS, d.hostCount());
+    TEST_ASSERT_EQUAL_STRING("h0", d.hostName(0));
+    TEST_ASSERT_EQUAL_STRING("h1", d.hostName(1));
+    TEST_ASSERT_EQUAL_STRING("extra", d.hostName(2));
+    TEST_ASSERT_EQUAL_STRING("h3", d.hostName(3));
+}
+
+void test_remove_host_compacts() {
+    static Dashboard d;  // ~5.6 Ko : hors pile
+    const char *ids[] = {"a"};
+    State st[] = {State::Idle};
+    int64_t t[] = {1};
+    d.apply(mk("h1", 1, ids, st, t), 100);
+    d.apply(mk("h2", 1, ids, st, t), 100);
+    d.apply(mk("h3", 1, ids, st, t), 100);
+    TEST_ASSERT_TRUE(d.removeHost("h2"));
+    TEST_ASSERT_EQUAL(2, d.hostCount());
+    TEST_ASSERT_EQUAL_STRING("h1", d.hostName(0));
+    TEST_ASSERT_EQUAL_STRING("h3", d.hostName(1));
+    Row rows[MAX_ROWS];
+    TEST_ASSERT_EQUAL(2, d.rows(rows, MAX_ROWS));
+    TEST_ASSERT_FALSE(d.removeHost("h2"));
+    TEST_ASSERT_FALSE(d.removeHost("zzz"));
+    TEST_ASSERT_TRUE(d.removeHost("h1"));
+    TEST_ASSERT_TRUE(d.removeHost("h3"));
+    TEST_ASSERT_EQUAL(0, d.hostCount());
+    TEST_ASSERT_EQUAL(0, (long)d.staleSeconds(1000));
+}
+
+void test_removed_host_comes_back_without_alert() {
+    Dashboard d;
+    const char *ids[] = {"a"};
+    State w[] = {State::Working}, p[] = {State::Permission};
+    int64_t t[] = {1};
+    d.apply(mk("h", 1, ids, w, t), 100);
+    TEST_ASSERT_TRUE(d.removeHost("h"));
+    TEST_ASSERT_EQUAL((int)Alert::None, (int)d.apply(mk("h", 1, ids, p, t), 102));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_no_alert_on_first_snapshot);
@@ -233,5 +341,12 @@ int main() {
     RUN_TEST(test_stale_seconds_future_ts_clamped);
     RUN_TEST(test_stale_seconds_max_over_hosts);
     RUN_TEST(test_any_waiting);
+    RUN_TEST(test_alert_idle_after_permission);
+    RUN_TEST(test_session_gone_then_back_no_alert);
+    RUN_TEST(test_limits_skip_host_without_limits);
+    RUN_TEST(test_extra_host_ignored_when_none_evictable);
+    RUN_TEST(test_extra_host_evicts_oldest_dead_host);
+    RUN_TEST(test_remove_host_compacts);
+    RUN_TEST(test_removed_host_comes_back_without_alert);
     return UNITY_END();
 }

@@ -100,7 +100,10 @@ static int64_t snapshotAge(const HostSnapshot &snap, int64_t receivedAt, int64_t
 Alert Dashboard::apply(const HostSnapshot &snap, int64_t now) {
     int idx = -1;
     for (int i = 0; i < count_; i++)
-        if (strcmp(hosts_[i].snap.host, snap.host) == 0) idx = i;
+        if (strcmp(hosts_[i].snap.host, snap.host) == 0) {
+            idx = i;
+            break;
+        }
 
     Alert alert = Alert::None;
     if (idx >= 0) {
@@ -115,13 +118,34 @@ Alert Dashboard::apply(const HostSnapshot &snap, int64_t now) {
             if (cur.state == State::Permission) alert = Alert::Permission;
             else if (cur.state == State::Idle && alert == Alert::None) alert = Alert::Idle;
         }
-    } else {
-        if (count_ >= MAX_HOSTS) return Alert::None;  // hote ignore
+    } else if (count_ < MAX_HOSTS) {
         idx = count_++;
+    } else {
+        // Tableau plein : reprendre le slot de l'hote muet depuis le plus
+        // longtemps, s'il l'est depuis plus de EVICT_AFTER_S.
+        int64_t oldest = EVICT_AFTER_S;
+        for (int i = 0; i < count_; i++) {
+            int64_t age = snapshotAge(hosts_[i].snap, hosts_[i].receivedAt, now);
+            if (age > oldest) {
+                oldest = age;
+                idx = i;
+            }
+        }
+        if (idx < 0) return Alert::None;  // hote ignore
     }
     hosts_[idx].snap = snap;
     hosts_[idx].receivedAt = now;
     return alert;
+}
+
+bool Dashboard::removeHost(const char *host) {
+    for (int i = 0; i < count_; i++) {
+        if (strcmp(hosts_[i].snap.host, host) != 0) continue;
+        for (int j = i + 1; j < count_; j++) hosts_[j - 1] = hosts_[j];
+        count_--;
+        return true;
+    }
+    return false;
 }
 
 int Dashboard::rows(Row *out, int max) const {
@@ -131,6 +155,7 @@ int Dashboard::rows(Row *out, int max) const {
             out[n++] = {&hosts_[h].snap.sessions[i], hosts_[h].snap.host};
 
     // Ordre strict : a egalite, l'ordre d'origine est conserve (tri stable).
+    // since = 0 (inconnu) passe en tete de son groupe d'urgence.
     auto before = [](const Row &a, const Row &b) {
         int ua = urgency(a.session->state), ub = urgency(b.session->state);
         return ua != ub ? ua < ub : a.session->since < b.session->since;

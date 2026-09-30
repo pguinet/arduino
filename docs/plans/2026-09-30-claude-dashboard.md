@@ -1977,6 +1977,8 @@ constexpr int MAX_SESSIONS = 12;
 constexpr int MAX_HOSTS = 4;
 constexpr int MAX_ROWS = MAX_SESSIONS * MAX_HOSTS;
 constexpr int64_t STALE_AFTER_S = 180;
+// Hote muet depuis plus longtemps : son slot peut etre repris par un nouvel hote.
+constexpr int64_t EVICT_AFTER_S = 6 * 3600;
 
 enum class State : uint8_t { Working, Idle, Permission };
 enum class Alert : uint8_t { None, Idle, Permission };
@@ -2021,8 +2023,16 @@ class Dashboard {
 public:
     // Integre un snapshot recu a `now` (epoch local). Retourne l'alerte a jouer
     // (aucune si le snapshot precedent de cet hote etait deja perime).
+    // Nouvel hote avec MAX_HOSTS deja connus : reprend le slot de l'hote le plus
+    // vieux si son age depasse EVICT_AFTER_S, sinon il est ignore.
     Alert apply(const HostSnapshot &snap, int64_t now);
-    // Lignes triees par urgence (permission > idle > working) puis anciennete.
+    // Oublie un hote (payload retained vide : topic efface). Retourne true s'il
+    // etait connu. Les hotes suivants sont decales (ordre conserve).
+    bool removeHost(const char *host);
+    // Lignes triees par urgence (permission > idle > working) puis anciennete
+    // (since croissant ; since = 0, inconnu, passe en tete de son groupe).
+    // Les pointeurs des Row ne sont valides que jusqu'au prochain apply() ou
+    // removeHost() : ne pas les conserver.
     int rows(Row *out, int max) const;
     // Quotas du snapshot le plus recent.
     const Limits *limits() const;
@@ -2158,15 +2168,19 @@ Règles des alertes :
 - passage vers `Permission` → `Alert::Permission` ; passage vers `Idle` depuis `Working` ou `Permission` → `Alert::Idle` ;
 - plusieurs transitions dans un même snapshot : `Permission` l'emporte ;
 - aucune alerte si le snapshot précédent de cet hôte était déjà périmé (âge > `STALE_AFTER_S` à l'arrivée du nouveau) : pas de salve de bips au retour du serveur, l'utilisateur ne suivait plus ces états.
+- une session absente du snapshot précédent (nouvelle, ou disparue puis revenue) ne déclenche pas d'alerte.
+
+Hôtes morts : `removeHost(host)` oublie un hôte et compacte le tableau (appelé par `main.cpp` sur un payload retained vide, topic effacé). Si un nouvel hôte arrive alors que `MAX_HOSTS` sont connus, il reprend le slot de l'hôte le plus vieux si son âge dépasse `EVICT_AFTER_S` (6 h), sinon il est ignoré. Les pointeurs renvoyés par `rows()` ne sont valides que jusqu'au prochain `apply()`/`removeHost()`. Dans le tri, `since = 0` (inconnu) passe en tête de son groupe d'urgence.
 
 Staleness : l'âge d'un hôte se mesure depuis le `ts` du snapshot (heure du serveur) et non depuis sa réception. Au démarrage de l'écran, le broker livre le message **retained** d'un agent peut-être mort depuis longtemps ; jugé à la réception, il paraîtrait frais pendant 3 min. Règle : `age = now - (snap.ts > 0 ? snap.ts : receivedAt)`, borné à 0 (horloge décalée ou non synchronisée) ; `staleSeconds` retourne le max sur les hôtes (0 si aucun). `receivedAt` reste le repli quand `ts` est absent.
 
-(Écart par rapport à la première version du plan : staleness sur `ts`, pas d'alerte après un snapshot périmé, tri stable avec le comparateur défini hors de la boucle ; tests ajoutés pour ces règles, la borne `age == STALE_AFTER_S`, la stabilité du tri et le plafond `max` de `rows()`.)
+(Écart par rapport à la première version du plan : staleness sur `ts`, pas d'alerte après un snapshot périmé, tri stable avec le comparateur défini hors de la boucle ; tests ajoutés pour ces règles, la borne `age == STALE_AFTER_S`, la stabilité du tri et le plafond `max` de `rows()` ; suite à la revue : `removeHost`, éviction des hôtes muets depuis 6 h, `break` sur l'hôte trouvé, tests permission→idle, 5e hôte ignoré, session disparue puis revenue, `limits()` ignorant un hôte plus récent sans quotas.)
 
 **Step 1: Tests** (helper `mk(host, {id,state,since}...)` construisant un `HostSnapshot` à la main)
 
 ```cpp
 #include <unity.h>
+#include <stdio.h>
 #include <string.h>
 #include "dash_model.h"
 
@@ -2382,6 +2396,113 @@ void test_any_waiting() {
     TEST_ASSERT_TRUE(d.anyWaiting());
 }
 
+void test_alert_idle_after_permission() {
+    Dashboard d;
+    const char *ids[] = {"a"};
+    State p[] = {State::Permission}, i[] = {State::Idle};
+    int64_t since[] = {10};
+    d.apply(mk("h", 1, ids, p, since), 100);
+    TEST_ASSERT_EQUAL((int)Alert::Idle, (int)d.apply(mk("h", 1, ids, i, since), 102));
+}
+
+void test_session_gone_then_back_no_alert() {
+    // une session absente du snapshot precedent est traitee comme nouvelle
+    Dashboard d;
+    const char *ids[] = {"a"};
+    State w[] = {State::Working}, p[] = {State::Permission};
+    int64_t t[] = {1};
+    d.apply(mk("h", 1, ids, w, t), 100);
+    d.apply(mk("h", 0, ids, w, t), 102);
+    TEST_ASSERT_EQUAL((int)Alert::None, (int)d.apply(mk("h", 1, ids, p, t), 104));
+}
+
+void test_limits_skip_host_without_limits() {
+    Dashboard d;
+    HostSnapshot s;
+    strcpy(s.host, "old");
+    s.ts = 100;
+    s.limits.d7 = 30;
+    d.apply(s, 100);
+    HostSnapshot n;
+    strcpy(n.host, "new");
+    n.ts = 200;  // plus recent, mais sans quotas
+    d.apply(n, 200);
+    TEST_ASSERT_NOT_NULL(d.limits());
+    TEST_ASSERT_EQUAL(30, d.limits()->d7);
+}
+
+// Remplit le tableau de bord avec MAX_HOSTS hotes "h0".."h3" de ts donnes.
+static void fillHosts(Dashboard &d, const int64_t ts[MAX_HOSTS], int64_t now) {
+    for (int i = 0; i < MAX_HOSTS; i++) {
+        HostSnapshot s;
+        snprintf(s.host, sizeof s.host, "h%d", i);
+        s.ts = ts[i];
+        d.apply(s, now);
+    }
+}
+
+void test_extra_host_ignored_when_none_evictable() {
+    static Dashboard d;  // ~5.6 Ko : hors pile
+    const int64_t now = 100000;
+    const int64_t ts[MAX_HOSTS] = {now, now - 60, now - EVICT_AFTER_S, now - 10};
+    fillHosts(d, ts, now);
+    HostSnapshot s;
+    strcpy(s.host, "extra");
+    s.ts = now;
+    TEST_ASSERT_EQUAL((int)Alert::None, (int)d.apply(s, now));
+    TEST_ASSERT_EQUAL(MAX_HOSTS, d.hostCount());
+    for (int i = 0; i < MAX_HOSTS; i++) TEST_ASSERT_NOT_EQUAL(0, strcmp("extra", d.hostName(i)));
+}
+
+void test_extra_host_evicts_oldest_dead_host() {
+    static Dashboard d;  // ~5.6 Ko : hors pile
+    const int64_t now = 100000;
+    // h1 et h2 morts depuis plus de 6 h ; h2 est le plus vieux
+    const int64_t ts[MAX_HOSTS] = {now, now - EVICT_AFTER_S - 10, now - EVICT_AFTER_S - 500, now};
+    fillHosts(d, ts, now);
+    HostSnapshot s;
+    strcpy(s.host, "extra");
+    s.ts = now;
+    d.apply(s, now);
+    TEST_ASSERT_EQUAL(MAX_HOSTS, d.hostCount());
+    TEST_ASSERT_EQUAL_STRING("h0", d.hostName(0));
+    TEST_ASSERT_EQUAL_STRING("h1", d.hostName(1));
+    TEST_ASSERT_EQUAL_STRING("extra", d.hostName(2));
+    TEST_ASSERT_EQUAL_STRING("h3", d.hostName(3));
+}
+
+void test_remove_host_compacts() {
+    static Dashboard d;  // ~5.6 Ko : hors pile
+    const char *ids[] = {"a"};
+    State st[] = {State::Idle};
+    int64_t t[] = {1};
+    d.apply(mk("h1", 1, ids, st, t), 100);
+    d.apply(mk("h2", 1, ids, st, t), 100);
+    d.apply(mk("h3", 1, ids, st, t), 100);
+    TEST_ASSERT_TRUE(d.removeHost("h2"));
+    TEST_ASSERT_EQUAL(2, d.hostCount());
+    TEST_ASSERT_EQUAL_STRING("h1", d.hostName(0));
+    TEST_ASSERT_EQUAL_STRING("h3", d.hostName(1));
+    Row rows[MAX_ROWS];
+    TEST_ASSERT_EQUAL(2, d.rows(rows, MAX_ROWS));
+    TEST_ASSERT_FALSE(d.removeHost("h2"));
+    TEST_ASSERT_FALSE(d.removeHost("zzz"));
+    TEST_ASSERT_TRUE(d.removeHost("h1"));
+    TEST_ASSERT_TRUE(d.removeHost("h3"));
+    TEST_ASSERT_EQUAL(0, d.hostCount());
+    TEST_ASSERT_EQUAL(0, (long)d.staleSeconds(1000));
+}
+
+void test_removed_host_comes_back_without_alert() {
+    Dashboard d;
+    const char *ids[] = {"a"};
+    State w[] = {State::Working}, p[] = {State::Permission};
+    int64_t t[] = {1};
+    d.apply(mk("h", 1, ids, w, t), 100);
+    TEST_ASSERT_TRUE(d.removeHost("h"));
+    TEST_ASSERT_EQUAL((int)Alert::None, (int)d.apply(mk("h", 1, ids, p, t), 102));
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_no_alert_on_first_snapshot);
@@ -2401,6 +2522,13 @@ int main() {
     RUN_TEST(test_stale_seconds_future_ts_clamped);
     RUN_TEST(test_stale_seconds_max_over_hosts);
     RUN_TEST(test_any_waiting);
+    RUN_TEST(test_alert_idle_after_permission);
+    RUN_TEST(test_session_gone_then_back_no_alert);
+    RUN_TEST(test_limits_skip_host_without_limits);
+    RUN_TEST(test_extra_host_ignored_when_none_evictable);
+    RUN_TEST(test_extra_host_evicts_oldest_dead_host);
+    RUN_TEST(test_remove_host_compacts);
+    RUN_TEST(test_removed_host_comes_back_without_alert);
     return UNITY_END();
 }
 ```
@@ -2436,7 +2564,10 @@ static int64_t snapshotAge(const HostSnapshot &snap, int64_t receivedAt, int64_t
 Alert Dashboard::apply(const HostSnapshot &snap, int64_t now) {
     int idx = -1;
     for (int i = 0; i < count_; i++)
-        if (strcmp(hosts_[i].snap.host, snap.host) == 0) idx = i;
+        if (strcmp(hosts_[i].snap.host, snap.host) == 0) {
+            idx = i;
+            break;
+        }
 
     Alert alert = Alert::None;
     if (idx >= 0) {
@@ -2451,13 +2582,34 @@ Alert Dashboard::apply(const HostSnapshot &snap, int64_t now) {
             if (cur.state == State::Permission) alert = Alert::Permission;
             else if (cur.state == State::Idle && alert == Alert::None) alert = Alert::Idle;
         }
-    } else {
-        if (count_ >= MAX_HOSTS) return Alert::None;  // hote ignore
+    } else if (count_ < MAX_HOSTS) {
         idx = count_++;
+    } else {
+        // Tableau plein : reprendre le slot de l'hote muet depuis le plus
+        // longtemps, s'il l'est depuis plus de EVICT_AFTER_S.
+        int64_t oldest = EVICT_AFTER_S;
+        for (int i = 0; i < count_; i++) {
+            int64_t age = snapshotAge(hosts_[i].snap, hosts_[i].receivedAt, now);
+            if (age > oldest) {
+                oldest = age;
+                idx = i;
+            }
+        }
+        if (idx < 0) return Alert::None;  // hote ignore
     }
     hosts_[idx].snap = snap;
     hosts_[idx].receivedAt = now;
     return alert;
+}
+
+bool Dashboard::removeHost(const char *host) {
+    for (int i = 0; i < count_; i++) {
+        if (strcmp(hosts_[i].snap.host, host) != 0) continue;
+        for (int j = i + 1; j < count_; j++) hosts_[j - 1] = hosts_[j];
+        count_--;
+        return true;
+    }
+    return false;
 }
 
 int Dashboard::rows(Row *out, int max) const {
@@ -2467,6 +2619,7 @@ int Dashboard::rows(Row *out, int max) const {
             out[n++] = {&hosts_[h].snap.sessions[i], hosts_[h].snap.host};
 
     // Ordre strict : a egalite, l'ordre d'origine est conserve (tri stable).
+    // since = 0 (inconnu) passe en tete de son groupe d'urgence.
     auto before = [](const Row &a, const Row &b) {
         int ua = urgency(a.session->state), ub = urgency(b.session->state);
         return ua != ub ? ua < ub : a.session->since < b.session->since;
@@ -2934,11 +3087,25 @@ static volatile bool pendingRender = false;
 static dash::Alert pendingAlert = dash::Alert::None;
 
 static void onMessage(char *topic, byte *payload, unsigned int len) {
+    if (len == 0) {
+        // Retained efface (agent desinstalle / hote retire) : oublier l'hote.
+        // topic = "claude-dash/<host>/state"
+        char host[33];
+        if (sscanf(topic, "claude-dash/%32[^/]/state", host) == 1 && dashboard.removeHost(host))
+            pendingRender = true;
+        return;
+    }
     if (!dash::parseSnapshot((const char *)payload, len, incoming)) {
         Serial.printf("Snapshot invalide sur %s\n", topic);
         return;
     }
-    dash::Alert a = dashboard.apply(incoming, time(nullptr));
+    time_t now = time(nullptr);
+    // Un decalage d'horloge fausse la staleness et rend l'ecran muet
+    // (snapshots juges perimes -> alertes supprimees) : le signaler.
+    if (incoming.ts > 0 && llabs((long long)now - (long long)incoming.ts) > 30)
+        Serial.printf("Attention : horloge decalee de %lld s avec %s (NTP ?)\n",
+                      (long long)now - (long long)incoming.ts, incoming.host);
+    dash::Alert a = dashboard.apply(incoming, now);
     if (a == dash::Alert::Permission || pendingAlert == dash::Alert::None) pendingAlert = a;
     pendingRender = true;
 }
@@ -2955,6 +3122,8 @@ static bool mqttConnect() {
     return true;
 }
 ```
+
+`onMessage` doit appeler `removeHost` sur un payload vide (retained effacé) et journaliser un avertissement quand `|time(nullptr) - ts| > 30 s` : un décalage d'horloge fait juger les snapshots périmés, ce qui rend l'écran muet. Nota : un message retained ancien (agent mort) déclenche aussi l'avertissement au démarrage, c'est attendu.
 
 Dans `setup()` : watchdog (comme Transit_Tracker), écran, `ui_create()`, WiFi non bloquant au-delà de 15 s, NTP (`configTime` + TZ Paris, attendre `time() > 1704067200`, requis pour valider le certificat TLS), puis :
 
@@ -3127,7 +3296,7 @@ Run: `$PIO test -e native` → tout PASS. `$SRV/run-checks.sh` → tout PASS.
 - `Claude_Dashboard/` - Tableau de bord Claude Code : quotas 5h/7j, sessions (projet, modele, etat travaille/attente/permission, outil, contexte) d'un serveur distant via MQTT/TLS (broker cloud dedie, `DASH_MQTT_*` dans `credentials.h`). Bip NS4168 + reveil ecran quand une session attend. Agent serveur Python dans `server/` (hooks + statusline + service systemd --user, voir son README)
 ```
 
-**Step 4: `$FW/README.md`** — schéma d'architecture, prérequis broker (TLS, 2 comptes, ACL), renseignement de `credentials.h`, build/upload, tests (`pio test -e native`, `server/run-checks.sh`), dépannage (rc MQTT, NTP, TLS 1.3).
+**Step 4: `$FW/README.md`** — schéma d'architecture, prérequis broker (TLS, 2 comptes, ACL), renseignement de `credentials.h`, build/upload, tests (`pio test -e native`, `server/run-checks.sh`), dépannage (rc MQTT, NTP, TLS 1.3 ; « aucun bip / bandeau de perte de liaison permanent → vérifier NTP sur le serveur », l'âge des snapshots étant calculé depuis leur `ts`).
 
 **Step 5: Commit**
 

@@ -10,6 +10,8 @@ constexpr int MAX_SESSIONS = 12;
 constexpr int MAX_HOSTS = 4;
 constexpr int MAX_ROWS = MAX_SESSIONS * MAX_HOSTS;
 constexpr int64_t STALE_AFTER_S = 180;
+// Hote muet depuis plus longtemps : son slot peut etre repris par un nouvel hote.
+constexpr int64_t EVICT_AFTER_S = 6 * 3600;
 
 enum class State : uint8_t { Working, Idle, Permission };
 enum class Alert : uint8_t { None, Idle, Permission };
@@ -54,8 +56,16 @@ class Dashboard {
 public:
     // Integre un snapshot recu a `now` (epoch local). Retourne l'alerte a jouer
     // (aucune si le snapshot precedent de cet hote etait deja perime).
+    // Nouvel hote avec MAX_HOSTS deja connus : reprend le slot de l'hote le plus
+    // vieux si son age depasse EVICT_AFTER_S, sinon il est ignore.
     Alert apply(const HostSnapshot &snap, int64_t now);
-    // Lignes triees par urgence (permission > idle > working) puis anciennete.
+    // Oublie un hote (payload retained vide : topic efface). Retourne true s'il
+    // etait connu. Les hotes suivants sont decales (ordre conserve).
+    bool removeHost(const char *host);
+    // Lignes triees par urgence (permission > idle > working) puis anciennete
+    // (since croissant ; since = 0, inconnu, passe en tete de son groupe).
+    // Les pointeurs des Row ne sont valides que jusqu'au prochain apply() ou
+    // removeHost() : ne pas les conserver.
     int rows(Row *out, int max) const;
     // Quotas du snapshot le plus recent.
     const Limits *limits() const;
