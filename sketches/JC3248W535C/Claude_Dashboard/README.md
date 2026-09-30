@@ -122,6 +122,14 @@ Dans la console Scaleway, **IoT Hub** :
    celui de l'écran ne peut rien publier. `<hostname>` est le nom publié par
    l'agent (`[agent] hostname` dans sa config, sinon le nom court de la
    machine).
+
+   ⚠️ **Après un changement de filtre, reconnecter le client** (redémarrer
+   l'agent, relancer l'écran). Constaté sur le plan Shared : une connexion déjà
+   ouverte perd alors tous ses messages sans erreur (CONNACK et keepalive OK,
+   aucun message qui passe) jusqu'à reconnexion. De même, une publication
+   QoS 1 hors filtre ne reçoit jamais de PUBACK. Avec la CLI `scw`, une liste
+   vide s'écrit `message-filters.publish.topics=none` ; une policy changée
+   seule garde l'ancienne liste de topics.
 3. Pour chaque device, télécharge **certificat et clé privée** à la création
    (Scaleway ne les redonne pas : en cas de perte, renouvelle le certificat).
    Note le **Device ID** (UUID) : c'est le client id MQTT obligatoire.
