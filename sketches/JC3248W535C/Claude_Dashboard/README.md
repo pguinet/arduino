@@ -42,14 +42,19 @@ Serveur Linux (un ou plusieurs)                  Scaleway IoT Hub        Maison
 
 ## Ce que montre l'écran
 
+![Rendu simulé de l'écran (480×320)](images/screen.png)
+
+*Rendu de `src/ui.cpp` par LVGL 8.4 sur PC, avec des sessions fictives.*
+
 ```
 ┌────────────────────────────────────────────────────────────┐
-│ Claude Code          srv-dev                     ●  14:32   │  en-tête
-│ 5h ████████░░░░░░░░░░  42%  reset 17:00                     │  quotas
-│ 7j ██████████████░░░░  71%  reset lun 09:00                 │
-│┃arduino      Opus 4.1  PERMISSION  Bash            3:12    │  cartes
-│┃ctx ████░░░░ 38%                                           │  (défilables)
-│┃dotfiles     Sonnet    ATTENTE                     12:40    │
+│ Claude Code         srv-dev                  ●    14:32    │  en-tête
+│ 5h  ███████████░░░░░░░░░░░░░░░░  42%    reset 17:00        │  quotas
+│ 7j  ███████████████████░░░░░░░░  71%    reset lun 09:00    │
+│ ┃ arduino             Opus 5.5   PERMISSION  Bash    3:12  │  cartes
+│ ┃ ctx ██████░░░░░░░░░░░  38%                               │  (défilables)
+│ ┃ dotfiles            Sonnet 5.5 ATTENTE            12:40  │
+│ ┃ ctx ████████████░░░░░  71%                               │
 └────────────────────────────────────────────────────────────┘
 ```
 
