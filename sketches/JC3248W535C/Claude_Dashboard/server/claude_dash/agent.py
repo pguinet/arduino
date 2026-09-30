@@ -51,12 +51,22 @@ class Outage:
 
 
 class Publisher:
-    """Publie si le contenu change (au plus toutes les `min_interval` s) ou en heartbeat."""
+    """Publie si le contenu change (au plus toutes les `min_interval` s) ou en heartbeat.
+
+    Avant la première publication réussie, les échecs (connexion MQTT pas encore établie)
+    restent en DEBUG pendant `startup_grace` s, puis sont signalés normalement.
+    """
 
     def __init__(
-        self, send: Callable[[str], None], min_interval: float = 2, heartbeat: float = 60
+        self,
+        send: Callable[[str], None],
+        min_interval: float = 2,
+        heartbeat: float = 60,
+        startup_grace: float = 30,
     ) -> None:
         self._send = send
+        self._startup_grace = startup_grace
+        self._started: float | None = None
         self._min_interval = min_interval
         self._heartbeat = heartbeat
         self._last_body: str | None = None
@@ -69,6 +79,8 @@ class Publisher:
         self._forced = True
 
     def tick(self, snapshot: dict[str, Any], now: float) -> bool:
+        if self._started is None:
+            self._started = now
         body = json.dumps({k: v for k, v in snapshot.items() if k != "ts"}, sort_keys=True)
         elapsed = now - self._last_sent
         changed = body != self._last_body
@@ -78,7 +90,11 @@ class Publisher:
         try:
             self._send(json.dumps(snapshot, separators=(",", ":")))
         except Exception as exc:
-            self._outage.failed("publication échouée: %s", exc)
+            starting = self._last_body is None and now - self._started < self._startup_grace
+            if starting:
+                log.debug("publication échouée: %s", exc)
+            else:
+                self._outage.failed("publication échouée: %s", exc)
             return False
         self._outage.recovered()
         self._forced = False

@@ -57,20 +57,54 @@ def test_failed_publish_is_retried() -> None:
 
 
 def test_repeated_failures_warn_once(caplog: pytest.LogCaptureFixture) -> None:
-    ok = False
+    ok = True
 
     def send(payload: str) -> None:
         if not ok:
             raise OSError("down")
 
     pub = Publisher(send)
+    assert pub.tick(snap(0), now=0.0)
+    ok = False
     with caplog.at_level(logging.INFO):
-        for t in range(5):
-            pub.tick(snap(t), now=float(t))
+        for t in range(1, 6):
+            pub.tick(snap(t), now=float(60 * t))
         ok = True
-        assert pub.tick(snap(5), now=5.0)
+        assert pub.tick(snap(6), now=360.0)
     assert caplog.text.count("publication échouée") == 1
     assert "publication rétablie" in caplog.text
+
+
+def test_startup_failures_before_first_publish_are_debug(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # au démarrage, la connexion MQTT n'est pas encore établie : pas d'avertissement
+    ok = False
+
+    def send(payload: str) -> None:
+        if not ok:
+            raise OSError("MQTT non connecté")
+
+    pub = Publisher(send, startup_grace=30)
+    with caplog.at_level(logging.DEBUG, logger="claude-dash-agent"):
+        for t in range(5):
+            pub.tick(snap(t), now=100.0 + t)
+        ok = True
+        assert pub.tick(snap(5), now=105.0)
+    assert [r.levelno for r in caplog.records if r.levelno > logging.DEBUG] == []
+    assert "publication échouée" in caplog.text  # visible en DEBUG
+
+
+def test_startup_failures_warn_after_grace(caplog: pytest.LogCaptureFixture) -> None:
+    def down(payload: str) -> None:
+        raise OSError("MQTT non connecté")
+
+    pub = Publisher(down, startup_grace=30)
+    with caplog.at_level(logging.INFO, logger="claude-dash-agent"):
+        for t in range(0, 61, 5):
+            pub.tick(snap(t), now=100.0 + t)
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and "publication échouée" in warnings[0].getMessage()
 
 
 def test_payload_is_compact_json() -> None:
