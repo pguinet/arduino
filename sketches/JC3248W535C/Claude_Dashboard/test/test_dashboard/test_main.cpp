@@ -322,6 +322,123 @@ void test_removed_host_comes_back_without_alert() {
     TEST_ASSERT_EQUAL((int)Alert::None, (int)d.apply(mk("h", 1, ids, p, t), 102));
 }
 
+// --- Detection de changement (evite de reconstruire la liste a chaque heartbeat) ---
+
+static HostSnapshot one(const char *host, State st, int64_t ts) {
+    const char *ids[] = {"a"};
+    State s[] = {st};
+    int64_t since[] = {10};
+    HostSnapshot h = mk(host, 1, ids, s, since);
+    h.ts = ts;
+    strcpy(h.sessions[0].project, "p");
+    h.sessions[0].ctx = 40;
+    h.limits.h5 = 10;
+    return h;
+}
+
+void test_changed_on_new_host() {
+    Dashboard d;
+    bool changed = false;
+    d.apply(one("h", State::Working, 100), 100, &changed);
+    TEST_ASSERT_TRUE(changed);
+}
+
+void test_not_changed_when_only_ts_differs() {
+    Dashboard d;
+    bool changed = true;
+    d.apply(one("h", State::Working, 100), 100);
+    d.apply(one("h", State::Working, 120), 120, &changed);
+    TEST_ASSERT_FALSE(changed);
+}
+
+void test_changed_on_session_state() {
+    Dashboard d;
+    bool changed = false;
+    d.apply(one("h", State::Working, 100), 100);
+    d.apply(one("h", State::Idle, 120), 120, &changed);
+    TEST_ASSERT_TRUE(changed);
+}
+
+void test_changed_on_session_fields() {
+    Dashboard d;
+    HostSnapshot base = one("h", State::Working, 100);
+    d.apply(base, 100);
+    bool changed = false;
+
+    HostSnapshot s = base;
+    s.sessions[0].ctx = 41;
+    d.apply(s, 101, &changed);
+    TEST_ASSERT_TRUE(changed);
+
+    s = base;
+    strcpy(s.sessions[0].tool, "Bash");
+    changed = false;
+    d.apply(s, 102, &changed);
+    TEST_ASSERT_TRUE(changed);
+
+    s = base;
+    s.sessions[0].since = 11;
+    changed = false;
+    d.apply(s, 103, &changed);
+    TEST_ASSERT_TRUE(changed);
+
+    s = base;
+    strcpy(s.sessions[0].model, "Opus");
+    changed = false;
+    d.apply(s, 104, &changed);
+    TEST_ASSERT_TRUE(changed);
+}
+
+void test_changed_on_session_count() {
+    Dashboard d;
+    HostSnapshot s = one("h", State::Working, 100);
+    d.apply(s, 100);
+    s.count = 0;
+    bool changed = false;
+    d.apply(s, 110, &changed);
+    TEST_ASSERT_TRUE(changed);
+}
+
+void test_changed_on_limits() {
+    Dashboard d;
+    HostSnapshot s = one("h", State::Working, 100);
+    d.apply(s, 100);
+    s.limits.d7Reset = 5000;
+    bool changed = false;
+    d.apply(s, 110, &changed);
+    TEST_ASSERT_TRUE(changed);
+}
+
+void test_changed_when_displayed_limits_switch_host() {
+    // quotas affiches = ceux du snapshot le plus recent : un heartbeat de l'autre hote
+    // peut changer l'affichage sans que ses propres quotas aient change
+    Dashboard d;
+    HostSnapshot a = one("a", State::Working, 100), b = one("b", State::Working, 200);
+    a.limits.h5 = 10;
+    b.limits.h5 = 20;
+    d.apply(a, 100);
+    d.apply(b, 200);
+    TEST_ASSERT_EQUAL(20, d.limits()->h5);
+    a.ts = 300;
+    bool changed = false;
+    d.apply(a, 300, &changed);
+    TEST_ASSERT_EQUAL(10, d.limits()->h5);
+    TEST_ASSERT_TRUE(changed);
+}
+
+void test_not_changed_when_host_ignored() {
+    static Dashboard d;  // ~5.6 Ko : hors pile
+    const int64_t now = 100000;
+    const int64_t ts[MAX_HOSTS] = {now, now, now, now};
+    fillHosts(d, ts, now);
+    HostSnapshot s;
+    strcpy(s.host, "extra");
+    s.ts = now;
+    bool changed = true;
+    d.apply(s, now, &changed);
+    TEST_ASSERT_FALSE(changed);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_no_alert_on_first_snapshot);
@@ -348,5 +465,13 @@ int main() {
     RUN_TEST(test_extra_host_evicts_oldest_dead_host);
     RUN_TEST(test_remove_host_compacts);
     RUN_TEST(test_removed_host_comes_back_without_alert);
+    RUN_TEST(test_changed_on_new_host);
+    RUN_TEST(test_not_changed_when_only_ts_differs);
+    RUN_TEST(test_changed_on_session_state);
+    RUN_TEST(test_changed_on_session_fields);
+    RUN_TEST(test_changed_on_session_count);
+    RUN_TEST(test_changed_on_limits);
+    RUN_TEST(test_changed_when_displayed_limits_switch_host);
+    RUN_TEST(test_not_changed_when_host_ignored);
     return UNITY_END();
 }

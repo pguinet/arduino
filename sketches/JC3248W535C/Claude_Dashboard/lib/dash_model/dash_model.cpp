@@ -97,7 +97,31 @@ static int64_t snapshotAge(const HostSnapshot &snap, int64_t receivedAt, int64_t
     return age < 0 ? 0 : age;
 }
 
-Alert Dashboard::apply(const HostSnapshot &snap, int64_t now) {
+static bool sameLimits(const Limits &a, const Limits &b) {
+    return a.h5 == b.h5 && a.h5Reset == b.h5Reset && a.d7 == b.d7 && a.d7Reset == b.d7Reset;
+}
+
+static bool sameLimits(const Limits *a, const Limits *b) {
+    if (!a || !b) return a == b;
+    return sameLimits(*a, *b);
+}
+
+static bool sameSession(const Session &a, const Session &b) {
+    return strcmp(a.id, b.id) == 0 && strcmp(a.project, b.project) == 0 &&
+           strcmp(a.model, b.model) == 0 && strcmp(a.tool, b.tool) == 0 && a.state == b.state &&
+           a.since == b.since && a.ctx == b.ctx;
+}
+
+// Compare le contenu affiche de deux snapshots du meme hote (ts ignore).
+static bool sameContent(const HostSnapshot &a, const HostSnapshot &b) {
+    if (a.count != b.count || !sameLimits(a.limits, b.limits)) return false;
+    for (int i = 0; i < a.count; i++)
+        if (!sameSession(a.sessions[i], b.sessions[i])) return false;
+    return true;
+}
+
+Alert Dashboard::apply(const HostSnapshot &snap, int64_t now, bool *changed) {
+    if (changed) *changed = false;
     int idx = -1;
     for (int i = 0; i < count_; i++)
         if (strcmp(hosts_[i].snap.host, snap.host) == 0) {
@@ -106,6 +130,7 @@ Alert Dashboard::apply(const HostSnapshot &snap, int64_t now) {
         }
 
     Alert alert = Alert::None;
+    bool isNew = idx < 0;
     if (idx >= 0) {
         const HostSnapshot &prev = hosts_[idx].snap;
         // Snapshot precedent deja perime : ses etats n'etaient plus fiables,
@@ -133,8 +158,16 @@ Alert Dashboard::apply(const HostSnapshot &snap, int64_t now) {
         }
         if (idx < 0) return Alert::None;  // hote ignore
     }
+
+    bool diff = isNew || !sameContent(hosts_[idx].snap, snap);
+    Limits shownBefore;
+    const Limits *lb = limits();
+    if (lb) shownBefore = *lb;
+
     hosts_[idx].snap = snap;
     hosts_[idx].receivedAt = now;
+
+    if (changed) *changed = diff || !sameLimits(lb ? &shownBefore : nullptr, limits());
     return alert;
 }
 

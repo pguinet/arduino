@@ -58,7 +58,9 @@ public:
     // (aucune si le snapshot precedent de cet hote etait deja perime).
     // Nouvel hote avec MAX_HOSTS deja connus : reprend le slot de l'hote le plus
     // vieux si son age depasse EVICT_AFTER_S, sinon il est ignore.
-    Alert apply(const HostSnapshot &snap, int64_t now);
+    // *changed (optionnel) : vrai si l'affichage doit etre reconstruit (nouvel hote,
+    // sessions ou quotas affiches differents). Un heartbeat ou seul ts change -> faux.
+    Alert apply(const HostSnapshot &snap, int64_t now, bool *changed = nullptr);
     // Oublie un hote (payload retained vide : topic efface). Retourne true s'il
     // etait connu. Les hotes suivants sont decales (ordre conserve).
     bool removeHost(const char *host);
