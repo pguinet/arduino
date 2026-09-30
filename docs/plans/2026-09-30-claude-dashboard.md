@@ -1430,9 +1430,12 @@ def main() -> None:
 
 **Écarts d'implémentation** (le code du dépôt fait foi) :
 - Option `tls` (défaut `true`) ajoutée dès cette tâche au lieu de la Task 6 : `Config.tls`, `if cfg.tls: client.tls_set(...)`, test `test_tls_can_be_disabled`.
-- `load_config` valide les types (port entier 1..65535, `tls` booléen, chaînes) et refuse `/`, `+`, `#` dans `topic_prefix` et `hostname` : toute erreur devient `ConfigError`.
+- `load_config` valide les types (port entier 1..65535, `tls` booléen, chaînes) ; `topic_prefix` sans `/`, `+`, `#` ni `$` initial ; `hostname` conforme à `^[A-Za-z0-9._-]{1,32}$` (le nom court par défaut aussi, sinon `ConfigError` demandant de renseigner `[agent] hostname`). Toute erreur devient `ConfigError`.
+- `store.load_sessions` : le nom de fichier fait foi pour l'id (`d | {"id": p.stem}`, noms non conformes à `_SAFE_ID` ignorés) ; un `x.json` annonçant `"id": "y"` purge `x.json`, jamais `y.json`.
 - Une itération de la boucle est factorisée dans `run_once(base, host, publisher, now_epoch, now_mono, pid_alive)` qui ne lève jamais (`log.exception`) : la purge continue si un id est invalide (`ValueError`), la publication a lieu malgré tout. Tests avec un store `tmp_path` et un faux publisher.
-- `Publisher` n'alerte qu'une fois par panne (puis DEBUG, puis « publication rétablie ») : pas un warning par seconde quand le broker est injoignable.
+- Classe `Outage` : une panne persistante n'est journalisée qu'une fois (puis DEBUG, puis INFO au rétablissement). Utilisée par `Publisher` (« publication rétablie ») et par `run_once` (traceback complète la première fois, « agent rétabli »).
+- `on_connect` (factorisé dans `on_connect_callback`) : `log.error("MQTT refusé")` si `reason_code.is_failure`, sinon INFO et pose d'un `threading.Event` ; la boucle appelle alors `publisher.force()` (le tick suivant publie sans tenir compte du contenu ni du throttling). `on_connect_fail` journalisé en DEBUG.
+- Arrêt : `client.disconnect()` puis `client.loop_stop()`. `main()` intercepte les erreurs d'initialisation du client (`OSError`, `ssl.SSLError`, `ValueError`, ex. `ca_certs` introuvable) : message clair et code de sortie 2. `run(cfg, client, connected)` reçoit le client créé par `main()`.
 - `CallbackAPIVersion` et `MQTTErrorCode` importés de `paho.mqtt.enums` (paho 2.x est typé, mypy strict refuse l'attribut non réexporté).
 - Suivi de `snapshot.py` (commit séparé) : `id` passé par `_text(..., 8, "?")`, horodatages (`since`, `h5_reset`, `d7_reset`) bornés à `0 <= v < 2**32`, sinon 0.
 
@@ -1608,7 +1611,7 @@ printf '%s' "$input" | timeout 1 ~/.local/bin/claude-dash-statusline >/dev/null 
 echo "$input" | jq -r '.model.display_name'
 ```
 
-et dépannage (`journalctl`, `mosquitto_sub`).
+et dépannage (`journalctl`, `mosquitto_sub`). Préciser aussi que le nom d'hôte doit être unique par broker (il sert au client id `claude-dash-<host>` et au topic) : si deux serveurs partagent le même nom court, renseigner `[agent] hostname` sur l'un d'eux.
 
 **Step 6: Commit**
 

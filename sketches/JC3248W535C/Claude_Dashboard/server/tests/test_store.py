@@ -69,3 +69,16 @@ def test_session_exists(tmp_path: Path) -> None:
     assert store.session_exists(tmp_path, "s1")
     with pytest.raises(ValueError):
         store.session_exists(tmp_path, "../x")
+
+
+def test_load_sessions_id_comes_from_filename(tmp_path: Path) -> None:
+    folder = tmp_path / "sessions"
+    folder.mkdir()
+    (folder / "x.json").write_text(json.dumps({"id": "y", "state": "idle"}))
+    (folder / "noid.json").write_text(json.dumps({"state": "working"}))
+    (folder / "bad name.json").write_text(json.dumps({"id": "ok", "state": "idle"}))
+    (folder / ".tmp-abc.json").write_text(json.dumps({"state": "idle"}))
+    assert store.load_sessions(tmp_path) == [
+        {"id": "noid", "state": "working"},
+        {"id": "x", "state": "idle"},
+    ]

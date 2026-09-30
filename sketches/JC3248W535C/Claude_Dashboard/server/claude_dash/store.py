@@ -81,10 +81,15 @@ def remove_session(base: Path, session_id: str) -> None:
 
 
 def load_sessions(base: Path) -> list[Data]:
+    """Sessions du store ; le nom de fichier fait foi pour l'id (jamais le contenu)."""
     folder = base / "sessions"
     if not folder.is_dir():
         return []
-    return [d for p in sorted(folder.glob("*.json")) if (d := _read(p))]
+    return [
+        d | {"id": p.stem}
+        for p in sorted(folder.glob("*.json"))
+        if _SAFE_ID.fullmatch(p.stem) and (d := _read(p))
+    ]
 
 
 def write_limits(base: Path, limits: Data) -> None:

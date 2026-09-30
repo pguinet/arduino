@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import signal
+import ssl
 import sys
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -26,6 +28,28 @@ class Ticker(Protocol):
     def tick(self, snapshot: dict[str, Any], now: float) -> bool: ...
 
 
+class Outage:
+    """Journalise une panne persistante une seule fois, puis son rétablissement.
+
+    La boucle réessaie chaque seconde : sans ce verrou, une panne remplit le journal.
+    """
+
+    def __init__(self, recovered_msg: str) -> None:
+        self._recovered_msg = recovered_msg
+        self.active = False
+
+    def failed(
+        self, msg: str, *args: object, level: int = logging.WARNING, exc_info: bool = False
+    ) -> None:
+        log.log(logging.DEBUG if self.active else level, msg, *args, exc_info=exc_info)
+        self.active = True
+
+    def recovered(self) -> None:
+        if self.active:
+            log.info("%s", self._recovered_msg)
+            self.active = False
+
+
 class Publisher:
     """Publie si le contenu change (au plus toutes les `min_interval` s) ou en heartbeat."""
 
@@ -37,26 +61,27 @@ class Publisher:
         self._heartbeat = heartbeat
         self._last_body: str | None = None
         self._last_sent = float("-inf")
-        self._failing = False
+        self._forced = False
+        self._outage = Outage("publication rétablie")
+
+    def force(self) -> None:
+        """Le prochain tick publie quels que soient contenu et throttling (après connexion)."""
+        self._forced = True
 
     def tick(self, snapshot: dict[str, Any], now: float) -> bool:
         body = json.dumps({k: v for k, v in snapshot.items() if k != "ts"}, sort_keys=True)
         elapsed = now - self._last_sent
         changed = body != self._last_body
-        if not ((changed and elapsed >= self._min_interval) or elapsed >= self._heartbeat):
+        due = (changed and elapsed >= self._min_interval) or elapsed >= self._heartbeat
+        if not (due or self._forced):
             return False
         try:
             self._send(json.dumps(snapshot, separators=(",", ":")))
         except Exception as exc:
-            # une seule alerte par panne : la boucle réessaie chaque seconde
-            log.log(
-                logging.DEBUG if self._failing else logging.WARNING, "publication échouée: %s", exc
-            )
-            self._failing = True
+            self._outage.failed("publication échouée: %s", exc)
             return False
-        if self._failing:
-            log.info("publication rétablie")
-            self._failing = False
+        self._outage.recovered()
+        self._forced = False
         self._last_body = body
         self._last_sent = now
         return True
@@ -69,6 +94,7 @@ def run_once(
     now_epoch: int,
     now_mono: float,
     pid_alive: Callable[[int], bool] = default_pid_alive,
+    outage: Outage | None = None,
 ) -> None:
     """Une itération : lecture du store, purge des sessions mortes, publication.
 
@@ -86,25 +112,43 @@ def run_once(
                 log.warning("purge impossible de %r: %s", sid, exc)
         publisher.tick(snap, now_mono)
     except Exception:
-        log.exception("itération de l'agent en échec")
+        (outage or Outage("")).failed(
+            "itération de l'agent en échec", level=logging.ERROR, exc_info=True
+        )
+    else:
+        if outage:
+            outage.recovered()
 
 
-def _make_client(cfg: Config) -> mqtt.Client:
+def on_connect_callback(connected: threading.Event) -> Callable[..., None]:
+    """Callback on_connect (API VERSION2) : signale la connexion à la boucle principale."""
+
+    def on_connect(client: Any, userdata: Any, flags: Any, reason_code: Any, props: Any) -> None:
+        if reason_code.is_failure:
+            log.error("MQTT refusé (%s)", reason_code)
+            return
+        log.info("MQTT connecté (%s)", reason_code)
+        connected.set()
+
+    return on_connect
+
+
+def _make_client(cfg: Config, connected: threading.Event) -> mqtt.Client:
     client = mqtt.Client(CallbackAPIVersion.VERSION2, client_id=f"claude-dash-{cfg.hostname}")
     if cfg.tls:
         client.tls_set(ca_certs=cfg.ca_certs)
     if cfg.username:
         client.username_pw_set(cfg.username, cfg.password)
     client.reconnect_delay_set(min_delay=1, max_delay=60)
-    client.on_connect = lambda c, u, f, rc, p: log.info("MQTT connecté (%s)", rc)
+    client.on_connect = on_connect_callback(connected)
+    client.on_connect_fail = lambda c, u: log.debug("connexion MQTT impossible, nouvel essai")
     client.on_disconnect = lambda c, u, f, rc, p: log.warning("MQTT déconnecté (%s)", rc)
     client.connect_async(cfg.host, cfg.port, keepalive=60)
     client.loop_start()
     return client
 
 
-def run(cfg: Config) -> None:
-    client = _make_client(cfg)
+def run(cfg: Config, client: mqtt.Client, connected: threading.Event) -> None:
     base = store.default_base()
 
     def send(payload: str) -> None:
@@ -115,6 +159,7 @@ def run(cfg: Config) -> None:
             raise OSError(f"publish rc={info.rc}")
 
     publisher = Publisher(send)
+    outage = Outage("agent rétabli")
     stop = False
 
     def _stop(*_: object) -> None:
@@ -125,10 +170,13 @@ def run(cfg: Config) -> None:
     signal.signal(signal.SIGINT, _stop)
     log.info("agent démarré, topic %s", cfg.topic)
     while not stop:
-        run_once(base, cfg.hostname, publisher, int(time.time()), time.monotonic())
+        if connected.is_set():
+            connected.clear()
+            publisher.force()  # republier tout de suite après (re)connexion
+        run_once(base, cfg.hostname, publisher, int(time.time()), time.monotonic(), outage=outage)
         time.sleep(1)
-    client.loop_stop()
     client.disconnect()
+    client.loop_stop()
 
 
 def main() -> None:
@@ -138,4 +186,17 @@ def main() -> None:
     except ConfigError as exc:
         log.error("%s", exc)
         sys.exit(2)
-    run(cfg)
+    connected = threading.Event()
+    try:
+        client = _make_client(cfg, connected)
+    except (OSError, ssl.SSLError, ValueError) as exc:
+        log.error(
+            "client MQTT impossible à initialiser (%s:%s, tls=%s, ca_certs=%s): %s",
+            cfg.host,
+            cfg.port,
+            cfg.tls,
+            cfg.ca_certs,
+            exc,
+        )
+        sys.exit(2)
+    run(cfg, client, connected)

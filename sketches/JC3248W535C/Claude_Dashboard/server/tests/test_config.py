@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from claude_dash import config
 from claude_dash.config import ConfigError, load_config
 
 
@@ -73,6 +74,7 @@ def test_invalid_toml(tmp_path: Path) -> None:
         'host="h"\ntls="yes"',
         'host="h"\nusername=42',
         'host="h"\ntopic_prefix="a/#"',
+        'host="h"\ntopic_prefix="$SYS"',
         "host=12",
     ],
 )
@@ -84,3 +86,27 @@ def test_invalid_values(tmp_path: Path, body: str) -> None:
 def test_hostname_with_wildcard_rejected(tmp_path: Path) -> None:
     with pytest.raises(ConfigError):
         load_config(write(tmp_path, '[mqtt]\nhost="h"\n[agent]\nhostname="a+b"\n'))
+
+
+@pytest.mark.parametrize("name", ["a b", "x" * 33, "hôte", "a/b", ""])
+def test_explicit_hostname_validated(tmp_path: Path, name: str) -> None:
+    with pytest.raises(ConfigError):
+        load_config(write(tmp_path, f'[mqtt]\nhost="h"\n[agent]\nhostname="{name}"\n'))
+
+
+def test_explicit_hostname_may_contain_dots(tmp_path: Path) -> None:
+    cfg = load_config(write(tmp_path, '[mqtt]\nhost="h"\n[agent]\nhostname="srv.dev_1-a"\n'))
+    assert cfg.hostname == "srv.dev_1-a"
+
+
+def test_default_hostname_is_short_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config.socket, "gethostname", lambda: "srv-01.example.org")
+    assert load_config(write(tmp_path, '[mqtt]\nhost="h"\n')).hostname == "srv-01"
+
+
+def test_invalid_default_hostname_asks_for_explicit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config.socket, "gethostname", lambda: "x" * 40)
+    with pytest.raises(ConfigError, match=r"\[agent\] hostname"):
+        load_config(write(tmp_path, '[mqtt]\nhost="h"\n'))

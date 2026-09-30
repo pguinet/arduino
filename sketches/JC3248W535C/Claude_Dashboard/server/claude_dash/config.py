@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import socket
 import stat
 import tomllib
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 _TOPIC_FORBIDDEN = set("/+#\0")
+_HOSTNAME = re.compile(r"[A-Za-z0-9._-]{1,32}")
 
 
 class ConfigError(Exception):
@@ -45,11 +47,26 @@ def _opt_str(section: dict[str, Any], key: str) -> str | None:
     return value
 
 
-def _topic_level(value: str, key: str) -> str:
-    """Niveau de topic MQTT : non vide, sans séparateur ni joker."""
-    if not value or _TOPIC_FORBIDDEN & set(value):
-        raise ConfigError(f"{key} invalide pour un topic MQTT: {value!r}")
+def _topic_prefix(value: str) -> str:
+    """Niveau de topic MQTT : non vide, sans séparateur ni joker, hors topics système `$`."""
+    if not value or value.startswith("$") or _TOPIC_FORBIDDEN & set(value):
+        raise ConfigError(f"topic_prefix invalide pour un topic MQTT: {value!r}")
     return value
+
+
+def _hostname(agent: dict[str, Any]) -> str:
+    """Nom publié (client id + topic) : explicite, sinon nom court de la machine."""
+    explicit = _opt_str(agent, "hostname")
+    if explicit is not None:
+        if not _HOSTNAME.fullmatch(explicit):
+            raise ConfigError(f"[agent] hostname invalide (A-Z a-z 0-9 . _ -, 1..32): {explicit!r}")
+        return explicit
+    short = socket.gethostname().split(".")[0]
+    if not _HOSTNAME.fullmatch(short):
+        raise ConfigError(
+            f"nom de machine {short!r} inutilisable dans un topic : définir [agent] hostname"
+        )
+    return short
 
 
 def load_config(path: Path) -> Config:
@@ -75,7 +92,6 @@ def load_config(path: Path) -> Config:
         if not isinstance(tls, bool):
             raise ConfigError("tls doit valoir true ou false")
         prefix = _opt_str(mqtt, "topic_prefix") or "claude-dash"
-        hostname = _opt_str(agent, "hostname") or socket.gethostname().split(".")[0]
         return Config(
             host=host,
             port=port,
@@ -83,8 +99,8 @@ def load_config(path: Path) -> Config:
             password=_opt_str(mqtt, "password"),
             ca_certs=_opt_str(mqtt, "ca_certs"),
             tls=tls,
-            topic_prefix=_topic_level(prefix, "topic_prefix"),
-            hostname=_topic_level(hostname, "hostname"),
+            topic_prefix=_topic_prefix(prefix),
+            hostname=_hostname(agent),
         )
     except ConfigError as exc:
         raise ConfigError(f"{path}: {exc}") from None
