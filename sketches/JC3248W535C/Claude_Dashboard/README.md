@@ -140,12 +140,23 @@ Macros requises (un `#error` explicite nomme celle qui manque) :
 | Macro | Contenu |
 |---|---|
 | `WIFI_SSID`, `WIFI_PASSWORD` | réseau WiFi 2.4 GHz |
+| `WIFI_SSID_2`…`_4`, `WIFI_PASSWORD_2`…`_4` | *optionnel* : réseaux d'autres sites |
 | `DASH_MQTT_SERVER` | nom d'hôte du hub |
 | `DASH_MQTT_PORT` | `8883` |
 | `DASH_MQTT_CLIENT_ID` | Device ID (UUID) du device `ecran` |
 | `DASH_MQTT_CA_CERT` | certificat CA du hub (PEM) |
 | `DASH_MQTT_CLIENT_CERT` | certificat du device `ecran` (PEM) |
 | `DASH_MQTT_CLIENT_KEY` | clé privée du device `ecran` (PEM, **non chiffrée**) |
+
+**Plusieurs sites.** Pour déplacer l'écran d'un site à l'autre, on déclare
+jusqu'à 4 réseaux (`WIFI_SSID` puis `WIFI_SSID_2`…`_4`, chacun avec son mot de
+passe). Au démarrage, et après 30 s sans WiFi, l'écran lance un scan
+asynchrone et se connecte au **premier réseau déclaré qui est visible**. C'est
+l'ordre de déclaration qui fixe la priorité, pas la force du signal. Avec un
+seul réseau, pas de scan : `WiFi.begin()` direct, ce qui marche aussi pour un
+SSID caché. Avec plusieurs, un SSID caché n'apparaît pas au scan et ne peut
+donc pas être choisi. Série : `Scan WiFi...`, `Reseau connu trouve : <ssid>`
+ou `Aucun reseau connu parmi N visibles` (nouvel essai 30 s plus tard).
 
 ### Conversion des PEM : `tools/pem2credentials.sh`
 
@@ -193,7 +204,7 @@ toujours bornée dans le temps (jamais d'accès direct au port série, cf.
 timeout 40 script -qfc "$PIO device monitor -e esp32s3" capture.log < /dev/null
 ```
 
-Démarrage normal : `WiFi connecte, IP ...`, `NTP synchronise : ...`,
+Démarrage normal : `WiFi connecte a <ssid>, IP ...`, `NTP synchronise : ...`,
 `MQTT connecte en ... ms (client xxxxxxxx...)`, `[TLS connecte] heap interne ...`,
 `Abonne a claude-dash/+/state (QoS 0) ...`, puis les cartes au premier
 heartbeat (≤ heartbeat de l'agent, 20 s par défaut).
