@@ -359,34 +359,27 @@ void test_changed_on_session_state() {
     TEST_ASSERT_TRUE(changed);
 }
 
-void test_changed_on_session_fields() {
+// Applique base, puis base modifiee par mutate : renvoie le drapeau changed.
+static bool changedAfter(const HostSnapshot &base, void (*mutate)(HostSnapshot &)) {
     Dashboard d;
-    HostSnapshot base = one("h", State::Working, 100);
     d.apply(base, 100);
-    bool changed = false;
-
     HostSnapshot s = base;
-    s.sessions[0].ctx = 41;
+    mutate(s);
+    bool changed = false;
     d.apply(s, 101, &changed);
-    TEST_ASSERT_TRUE(changed);
+    return changed;
+}
 
-    s = base;
-    strcpy(s.sessions[0].tool, "Bash");
-    changed = false;
-    d.apply(s, 102, &changed);
-    TEST_ASSERT_TRUE(changed);
-
-    s = base;
-    s.sessions[0].since = 11;
-    changed = false;
-    d.apply(s, 103, &changed);
-    TEST_ASSERT_TRUE(changed);
-
-    s = base;
-    strcpy(s.sessions[0].model, "Opus");
-    changed = false;
-    d.apply(s, 104, &changed);
-    TEST_ASSERT_TRUE(changed);
+void test_changed_on_session_fields() {
+    HostSnapshot base = one("h", State::Working, 100);
+    TEST_ASSERT_FALSE(changedAfter(base, [](HostSnapshot &) {}));
+    TEST_ASSERT_TRUE(changedAfter(base, [](HostSnapshot &s) { s.sessions[0].ctx = 41; }));
+    TEST_ASSERT_TRUE(changedAfter(base, [](HostSnapshot &s) { strcpy(s.sessions[0].tool, "Bash"); }));
+    TEST_ASSERT_TRUE(changedAfter(base, [](HostSnapshot &s) { s.sessions[0].since = 11; }));
+    TEST_ASSERT_TRUE(changedAfter(base, [](HostSnapshot &s) { strcpy(s.sessions[0].model, "Opus"); }));
+    TEST_ASSERT_TRUE(changedAfter(base, [](HostSnapshot &s) { strcpy(s.sessions[0].project, "autre"); }));
+    // session remplacee par une autre au contenu identique
+    TEST_ASSERT_TRUE(changedAfter(base, [](HostSnapshot &s) { strcpy(s.sessions[0].id, "b"); }));
 }
 
 void test_changed_on_session_count() {
@@ -439,6 +432,20 @@ void test_not_changed_when_host_ignored() {
     TEST_ASSERT_FALSE(changed);
 }
 
+void test_changed_when_host_evicts_dead_one() {
+    static Dashboard d;  // ~5.6 Ko : hors pile
+    const int64_t now = 100000;
+    const int64_t ts[MAX_HOSTS] = {now, now - EVICT_AFTER_S - 10, now, now};
+    fillHosts(d, ts, now);
+    HostSnapshot s;
+    strcpy(s.host, "extra");
+    s.ts = now;
+    bool changed = false;
+    d.apply(s, now, &changed);
+    TEST_ASSERT_EQUAL_STRING("extra", d.hostName(1));
+    TEST_ASSERT_TRUE(changed);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_no_alert_on_first_snapshot);
@@ -473,5 +480,6 @@ int main() {
     RUN_TEST(test_changed_on_limits);
     RUN_TEST(test_changed_when_displayed_limits_switch_host);
     RUN_TEST(test_not_changed_when_host_ignored);
+    RUN_TEST(test_changed_when_host_evicts_dead_one);
     return UNITY_END();
 }
