@@ -39,9 +39,13 @@ bool parseSnapshot(const char *json, size_t len, HostSnapshot &out) {
     const char *host = doc["host"];
     if (!host || !*host) return false;
 
-    out = HostSnapshot();
+    // Remise a zero en place (pas de HostSnapshot temporaire de ~1.3 Ko sur
+    // la pile du callback MQTT) : count borne les lectures et chaque slot
+    // utilise est entierement reecrit.
     copyStr(out.host, sizeof out.host, host);
     out.ts = parseEpoch(doc["ts"]);
+    out.limits = Limits();
+    out.count = 0;
 
     JsonObjectConst lim = doc["limits"];
     if (!lim.isNull()) {
@@ -51,10 +55,13 @@ bool parseSnapshot(const char *json, size_t len, HostSnapshot &out) {
         out.limits.d7Reset = parseEpoch(lim["d7_reset"]);
     }
 
-    for (JsonObjectConst js : doc["sessions"].as<JsonArrayConst>()) {
+    for (JsonVariantConst v : doc["sessions"].as<JsonArrayConst>()) {
         if (out.count >= MAX_SESSIONS) break;
+        JsonObjectConst js = v.as<JsonObjectConst>();
+        const char *id = js["id"];
+        if (!id || !*id) continue;  // pas un objet, ou id absent / vide
         Session &s = out.sessions[out.count++];
-        copyStr(s.id, sizeof s.id, js["id"]);
+        copyStr(s.id, sizeof s.id, id);
         copyStr(s.project, sizeof s.project, js["project"]);
         copyStr(s.model, sizeof s.model, js["model"]);
         copyStr(s.tool, sizeof s.tool, js["tool"]);

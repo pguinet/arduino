@@ -1753,7 +1753,7 @@ git commit -m "Claude_Dashboard: squelette PlatformIO JC3248 (drivers ecran)"
 
 **Step 1: Tests Unity**
 
-(Écart par rapport à la première version du plan : tests défensifs ajoutés — types JSON erronés, host non-chaîne, `sessions` non-tableau, pourcentages bornés, sortie intacte en cas d'échec ; buffer du test de troncature agrandi à 8 Ko avec vérification qu'il n'est pas tronqué.)
+(Écart par rapport à la première version du plan : tests défensifs ajoutés — types JSON erronés, host non-chaîne, `sessions` non-tableau, pourcentages bornés, sortie intacte en cas d'échec (JSON invalide, host absent ou vide), host de 32 caractères conservé, entrées de session non-objet ou sans `id` ignorées, re-parse sans résidu ; buffer du test de troncature agrandi à 8 Ko avec vérification qu'il n'est pas tronqué.)
 
 ```cpp
 #include <unity.h>
@@ -1818,12 +1818,57 @@ void test_parse_missing_host() {
 }
 
 void test_parse_failure_leaves_output_untouched() {
+    const char *bad[] = {"{oops", "{\"ts\":1,\"sessions\":[]}",
+                         "{\"host\":\"\",\"ts\":1,\"sessions\":[]}"};
+    for (const char *j : bad) {
+        HostSnapshot s;
+        strcpy(s.host, "keep");
+        s.count = 3;
+        TEST_ASSERT_FALSE_MESSAGE(parseSnapshot(j, strlen(j), s), j);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("keep", s.host, j);
+        TEST_ASSERT_EQUAL_MESSAGE(3, s.count, j);
+    }
+}
+
+void test_host_of_32_chars_kept_intact() {
+    const char *j = "{\"host\":\"0123456789abcdef0123456789ABCDEF\",\"ts\":1,\"sessions\":[]}";
     HostSnapshot s;
-    strcpy(s.host, "keep");
-    s.count = 3;
-    TEST_ASSERT_FALSE(parseSnapshot("{oops", 5, s));
-    TEST_ASSERT_EQUAL_STRING("keep", s.host);
-    TEST_ASSERT_EQUAL(3, s.count);
+    TEST_ASSERT_TRUE(parseSnapshot(j, strlen(j), s));
+    TEST_ASSERT_EQUAL_STRING("0123456789abcdef0123456789ABCDEF", s.host);
+}
+
+void test_invalid_session_entries_skipped() {
+    const char *j =
+        "{\"host\":\"h\",\"ts\":1,\"sessions\":[1,\"x\",null,[],{\"state\":\"idle\"},"
+        "{\"id\":\"\",\"state\":\"idle\"},{\"id\":\"ok\",\"state\":\"idle\",\"since\":1}]}";
+    HostSnapshot s;
+    TEST_ASSERT_TRUE(parseSnapshot(j, strlen(j), s));
+    TEST_ASSERT_EQUAL(1, s.count);
+    TEST_ASSERT_EQUAL_STRING("ok", s.sessions[0].id);
+}
+
+void test_reparse_resets_previous_content() {
+    // Le snapshot est reutilise (static dans main.cpp) : aucun residu du parse precedent.
+    HostSnapshot s;
+    TEST_ASSERT_TRUE(parseSnapshot(SAMPLE, strlen(SAMPLE), s));
+    const char *j =
+        "{\"host\":\"h2\",\"sessions\":[{\"id\":\"z\",\"state\":\"working\"}]}";
+    TEST_ASSERT_TRUE(parseSnapshot(j, strlen(j), s));
+    TEST_ASSERT_EQUAL_STRING("h2", s.host);
+    TEST_ASSERT_EQUAL(0, (long)s.ts);
+    TEST_ASSERT_EQUAL(-1, s.limits.h5);
+    TEST_ASSERT_EQUAL(0, (long)s.limits.h5Reset);
+    TEST_ASSERT_EQUAL(-1, s.limits.d7);
+    TEST_ASSERT_EQUAL(0, (long)s.limits.d7Reset);
+    TEST_ASSERT_EQUAL(1, s.count);
+    const Session &z = s.sessions[0];
+    TEST_ASSERT_EQUAL_STRING("z", z.id);
+    TEST_ASSERT_EQUAL_STRING("", z.project);
+    TEST_ASSERT_EQUAL_STRING("", z.model);
+    TEST_ASSERT_EQUAL_STRING("", z.tool);
+    TEST_ASSERT_EQUAL((int)State::Working, (int)z.state);
+    TEST_ASSERT_EQUAL(0, (long)z.since);
+    TEST_ASSERT_EQUAL(-1, z.ctx);
 }
 
 void test_parse_truncates_long_strings_and_caps_sessions() {
@@ -1856,7 +1901,7 @@ void test_wrong_types_are_ignored() {
     // Valeurs de mauvais type : chaines vides / valeurs par defaut, sans planter.
     const char *j =
         "{\"host\":\"h\",\"ts\":\"x\",\"limits\":{\"h5\":\"a\",\"d7\":[1]},"
-        "\"sessions\":[{\"id\":7,\"project\":123,\"model\":null,\"state\":5,"
+        "\"sessions\":[{\"id\":\"i\",\"project\":123,\"model\":null,\"state\":5,"
         "\"since\":\"z\",\"ctx\":{},\"tool\":true}]}";
     HostSnapshot s;
     TEST_ASSERT_TRUE(parseSnapshot(j, strlen(j), s));
@@ -1864,7 +1909,7 @@ void test_wrong_types_are_ignored() {
     TEST_ASSERT_EQUAL(-1, s.limits.h5);
     TEST_ASSERT_EQUAL(-1, s.limits.d7);
     TEST_ASSERT_EQUAL(1, s.count);
-    TEST_ASSERT_EQUAL_STRING("", s.sessions[0].id);
+    TEST_ASSERT_EQUAL_STRING("i", s.sessions[0].id);
     TEST_ASSERT_EQUAL_STRING("", s.sessions[0].project);
     TEST_ASSERT_EQUAL_STRING("", s.sessions[0].model);
     TEST_ASSERT_EQUAL_STRING("", s.sessions[0].tool);
@@ -1900,6 +1945,9 @@ int main() {
     RUN_TEST(test_parse_invalid_json);
     RUN_TEST(test_parse_missing_host);
     RUN_TEST(test_parse_failure_leaves_output_untouched);
+    RUN_TEST(test_host_of_32_chars_kept_intact);
+    RUN_TEST(test_invalid_session_entries_skipped);
+    RUN_TEST(test_reparse_resets_previous_content);
     RUN_TEST(test_parse_truncates_long_strings_and_caps_sessions);
     RUN_TEST(test_unknown_state_maps_to_idle);
     RUN_TEST(test_wrong_types_are_ignored);
@@ -1951,7 +1999,7 @@ struct Session {
 };
 
 struct HostSnapshot {
-    char host[32] = "";
+    char host[33] = "";  // HOST_MAX = 32 cote serveur
     int64_t ts = 0;
     Limits limits;
     Session sessions[MAX_SESSIONS];
@@ -1965,7 +2013,8 @@ struct Row {
 };
 
 // Parse un snapshot JSON. En cas d'echec (JSON invalide, host absent),
-// retourne false et laisse `out` intact.
+// retourne false et laisse `out` intact. Les sessions qui ne sont pas des
+// objets ou sans "id" sont ignorees. Seules sessions[0..count) sont valides.
 bool parseSnapshot(const char *json, size_t len, HostSnapshot &out);
 
 class Dashboard {
@@ -2003,7 +2052,7 @@ bool screenShouldBeOn(bool anyWaiting, uint32_t nowMs, uint32_t lastActivityMs,
 }  // namespace dash
 ```
 
-**Step 4: `dash_model.cpp` — parsing** (le reste en stubs `return {}`/`return 0` pour compiler)
+**Step 4: `dash_model.cpp` — parsing** (le reste en stubs `return {}`/`return 0` pour compiler). Remise à zéro en place plutôt que `out = HostSnapshot()` : le temporaire portait la frame à ~1.7 Ko sur xtensa, sur la pile de 8 Ko de la loop task (callback MQTT).
 
 ```cpp
 #include "dash_model.h"
@@ -2047,9 +2096,13 @@ bool parseSnapshot(const char *json, size_t len, HostSnapshot &out) {
     const char *host = doc["host"];
     if (!host || !*host) return false;
 
-    out = HostSnapshot();
+    // Remise a zero en place (pas de HostSnapshot temporaire de ~1.3 Ko sur
+    // la pile du callback MQTT) : count borne les lectures et chaque slot
+    // utilise est entierement reecrit.
     copyStr(out.host, sizeof out.host, host);
     out.ts = parseEpoch(doc["ts"]);
+    out.limits = Limits();
+    out.count = 0;
 
     JsonObjectConst lim = doc["limits"];
     if (!lim.isNull()) {
@@ -2059,10 +2112,13 @@ bool parseSnapshot(const char *json, size_t len, HostSnapshot &out) {
         out.limits.d7Reset = parseEpoch(lim["d7_reset"]);
     }
 
-    for (JsonObjectConst js : doc["sessions"].as<JsonArrayConst>()) {
+    for (JsonVariantConst v : doc["sessions"].as<JsonArrayConst>()) {
         if (out.count >= MAX_SESSIONS) break;
+        JsonObjectConst js = v.as<JsonObjectConst>();
+        const char *id = js["id"];
+        if (!id || !*id) continue;  // pas un objet, ou id absent / vide
         Session &s = out.sessions[out.count++];
-        copyStr(s.id, sizeof s.id, js["id"]);
+        copyStr(s.id, sizeof s.id, id);
         copyStr(s.project, sizeof s.project, js["project"]);
         copyStr(s.model, sizeof s.model, js["model"]);
         copyStr(s.tool, sizeof s.tool, js["tool"]);
@@ -2078,7 +2134,7 @@ bool parseSnapshot(const char *json, size_t len, HostSnapshot &out) {
 }  // namespace dash
 ```
 
-**Step 5: Vérifier** — `$PIO test -e native -f test_parse` → 10 tests PASS.
+**Step 5: Vérifier** — `$PIO test -e native -f test_parse` → 13 tests PASS.
 
 **Step 6: Commit**
 

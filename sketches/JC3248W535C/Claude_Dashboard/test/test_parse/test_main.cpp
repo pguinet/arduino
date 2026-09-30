@@ -60,12 +60,57 @@ void test_parse_missing_host() {
 }
 
 void test_parse_failure_leaves_output_untouched() {
+    const char *bad[] = {"{oops", "{\"ts\":1,\"sessions\":[]}",
+                         "{\"host\":\"\",\"ts\":1,\"sessions\":[]}"};
+    for (const char *j : bad) {
+        HostSnapshot s;
+        strcpy(s.host, "keep");
+        s.count = 3;
+        TEST_ASSERT_FALSE_MESSAGE(parseSnapshot(j, strlen(j), s), j);
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("keep", s.host, j);
+        TEST_ASSERT_EQUAL_MESSAGE(3, s.count, j);
+    }
+}
+
+void test_host_of_32_chars_kept_intact() {
+    const char *j = "{\"host\":\"0123456789abcdef0123456789ABCDEF\",\"ts\":1,\"sessions\":[]}";
     HostSnapshot s;
-    strcpy(s.host, "keep");
-    s.count = 3;
-    TEST_ASSERT_FALSE(parseSnapshot("{oops", 5, s));
-    TEST_ASSERT_EQUAL_STRING("keep", s.host);
-    TEST_ASSERT_EQUAL(3, s.count);
+    TEST_ASSERT_TRUE(parseSnapshot(j, strlen(j), s));
+    TEST_ASSERT_EQUAL_STRING("0123456789abcdef0123456789ABCDEF", s.host);
+}
+
+void test_invalid_session_entries_skipped() {
+    const char *j =
+        "{\"host\":\"h\",\"ts\":1,\"sessions\":[1,\"x\",null,[],{\"state\":\"idle\"},"
+        "{\"id\":\"\",\"state\":\"idle\"},{\"id\":\"ok\",\"state\":\"idle\",\"since\":1}]}";
+    HostSnapshot s;
+    TEST_ASSERT_TRUE(parseSnapshot(j, strlen(j), s));
+    TEST_ASSERT_EQUAL(1, s.count);
+    TEST_ASSERT_EQUAL_STRING("ok", s.sessions[0].id);
+}
+
+void test_reparse_resets_previous_content() {
+    // Le snapshot est reutilise (static dans main.cpp) : aucun residu du parse precedent.
+    HostSnapshot s;
+    TEST_ASSERT_TRUE(parseSnapshot(SAMPLE, strlen(SAMPLE), s));
+    const char *j =
+        "{\"host\":\"h2\",\"sessions\":[{\"id\":\"z\",\"state\":\"working\"}]}";
+    TEST_ASSERT_TRUE(parseSnapshot(j, strlen(j), s));
+    TEST_ASSERT_EQUAL_STRING("h2", s.host);
+    TEST_ASSERT_EQUAL(0, (long)s.ts);
+    TEST_ASSERT_EQUAL(-1, s.limits.h5);
+    TEST_ASSERT_EQUAL(0, (long)s.limits.h5Reset);
+    TEST_ASSERT_EQUAL(-1, s.limits.d7);
+    TEST_ASSERT_EQUAL(0, (long)s.limits.d7Reset);
+    TEST_ASSERT_EQUAL(1, s.count);
+    const Session &z = s.sessions[0];
+    TEST_ASSERT_EQUAL_STRING("z", z.id);
+    TEST_ASSERT_EQUAL_STRING("", z.project);
+    TEST_ASSERT_EQUAL_STRING("", z.model);
+    TEST_ASSERT_EQUAL_STRING("", z.tool);
+    TEST_ASSERT_EQUAL((int)State::Working, (int)z.state);
+    TEST_ASSERT_EQUAL(0, (long)z.since);
+    TEST_ASSERT_EQUAL(-1, z.ctx);
 }
 
 void test_parse_truncates_long_strings_and_caps_sessions() {
@@ -98,7 +143,7 @@ void test_wrong_types_are_ignored() {
     // Valeurs de mauvais type : chaines vides / valeurs par defaut, sans planter.
     const char *j =
         "{\"host\":\"h\",\"ts\":\"x\",\"limits\":{\"h5\":\"a\",\"d7\":[1]},"
-        "\"sessions\":[{\"id\":7,\"project\":123,\"model\":null,\"state\":5,"
+        "\"sessions\":[{\"id\":\"i\",\"project\":123,\"model\":null,\"state\":5,"
         "\"since\":\"z\",\"ctx\":{},\"tool\":true}]}";
     HostSnapshot s;
     TEST_ASSERT_TRUE(parseSnapshot(j, strlen(j), s));
@@ -106,7 +151,7 @@ void test_wrong_types_are_ignored() {
     TEST_ASSERT_EQUAL(-1, s.limits.h5);
     TEST_ASSERT_EQUAL(-1, s.limits.d7);
     TEST_ASSERT_EQUAL(1, s.count);
-    TEST_ASSERT_EQUAL_STRING("", s.sessions[0].id);
+    TEST_ASSERT_EQUAL_STRING("i", s.sessions[0].id);
     TEST_ASSERT_EQUAL_STRING("", s.sessions[0].project);
     TEST_ASSERT_EQUAL_STRING("", s.sessions[0].model);
     TEST_ASSERT_EQUAL_STRING("", s.sessions[0].tool);
@@ -142,6 +187,9 @@ int main() {
     RUN_TEST(test_parse_invalid_json);
     RUN_TEST(test_parse_missing_host);
     RUN_TEST(test_parse_failure_leaves_output_untouched);
+    RUN_TEST(test_host_of_32_chars_kept_intact);
+    RUN_TEST(test_invalid_session_entries_skipped);
+    RUN_TEST(test_reparse_resets_previous_content);
     RUN_TEST(test_parse_truncates_long_strings_and_caps_sessions);
     RUN_TEST(test_unknown_state_maps_to_idle);
     RUN_TEST(test_wrong_types_are_ignored);

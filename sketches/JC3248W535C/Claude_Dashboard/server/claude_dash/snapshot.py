@@ -15,7 +15,9 @@ PCT_KEYS = ("h5", "d7")
 PID_MAX = 4_194_304  # borne haute de /proc/sys/kernel/pid_max sous Linux 64 bits
 HOST_MAX = 32
 ID_MAX = 8
-TIME_MAX = 2**32  # horodatages epoch publiés : uint32 côté firmware
+# Borne des epochs publiés : le firmware les stocke en int64, la borne uint32
+# garde juste un payload compact et des valeurs saines.
+TIME_MAX = 2**32
 TIME_KEYS = ("h5_reset", "d7_reset")
 
 

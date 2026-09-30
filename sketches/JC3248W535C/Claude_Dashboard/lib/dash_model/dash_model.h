@@ -32,7 +32,7 @@ struct Session {
 };
 
 struct HostSnapshot {
-    char host[32] = "";
+    char host[33] = "";  // HOST_MAX = 32 cote serveur
     int64_t ts = 0;
     Limits limits;
     Session sessions[MAX_SESSIONS];
@@ -46,7 +46,8 @@ struct Row {
 };
 
 // Parse un snapshot JSON. En cas d'echec (JSON invalide, host absent),
-// retourne false et laisse `out` intact.
+// retourne false et laisse `out` intact. Les sessions qui ne sont pas des
+// objets ou sans "id" sont ignorees. Seules sessions[0..count) sont valides.
 bool parseSnapshot(const char *json, size_t len, HostSnapshot &out);
 
 class Dashboard {
