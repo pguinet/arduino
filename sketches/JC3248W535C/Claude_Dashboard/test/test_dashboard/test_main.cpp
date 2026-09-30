@@ -173,7 +173,7 @@ void test_stale_seconds() {
 }
 
 void test_stale_seconds_uses_snapshot_ts() {
-    // message retained d'un agent mort depuis longtemps, recu maintenant : perime
+    // vieux message d'un agent muet depuis longtemps, recu maintenant : perime
     Dashboard d;
     HostSnapshot s;
     strcpy(s.host, "h");
@@ -289,7 +289,7 @@ static void fillHosts(Dashboard &d, const int64_t ts[MAX_HOSTS], int64_t now) {
 void test_extra_host_ignored_when_none_evictable() {
     static Dashboard d;  // ~5.6 Ko : hors pile
     const int64_t now = 100000;
-    const int64_t ts[MAX_HOSTS] = {now, now - 60, now - EVICT_AFTER_S, now - 10};
+    const int64_t ts[MAX_HOSTS] = {now, now - 60, now - FORGET_AFTER_S, now - 10};
     fillHosts(d, ts, now);
     HostSnapshot s;
     strcpy(s.host, "extra");
@@ -302,8 +302,8 @@ void test_extra_host_ignored_when_none_evictable() {
 void test_extra_host_evicts_oldest_dead_host() {
     static Dashboard d;  // ~5.6 Ko : hors pile
     const int64_t now = 100000;
-    // h1 et h2 morts depuis plus de 6 h ; h2 est le plus vieux
-    const int64_t ts[MAX_HOSTS] = {now, now - EVICT_AFTER_S - 10, now - EVICT_AFTER_S - 500, now};
+    // h1 et h2 muets depuis plus de 1 h ; h2 est le plus vieux
+    const int64_t ts[MAX_HOSTS] = {now, now - FORGET_AFTER_S - 10, now - FORGET_AFTER_S - 500, now};
     fillHosts(d, ts, now);
     HostSnapshot s;
     strcpy(s.host, "extra");
@@ -461,7 +461,7 @@ void test_not_changed_when_host_ignored() {
 void test_changed_when_host_evicts_dead_one() {
     static Dashboard d;  // ~5.6 Ko : hors pile
     const int64_t now = 100000;
-    const int64_t ts[MAX_HOSTS] = {now, now - EVICT_AFTER_S - 10, now, now};
+    const int64_t ts[MAX_HOSTS] = {now, now - FORGET_AFTER_S - 10, now, now};
     fillHosts(d, ts, now);
     HostSnapshot s;
     strcpy(s.host, "extra");
@@ -470,6 +470,76 @@ void test_changed_when_host_evicts_dead_one() {
     d.apply(s, now, &changed);
     TEST_ASSERT_EQUAL_STRING("extra", d.hostName(1));
     TEST_ASSERT_TRUE(changed);
+}
+
+// --- Oubli des hotes muets (expire) ---
+
+static HostSnapshot withTs(const char *host, int64_t ts) {
+    HostSnapshot s;
+    strcpy(s.host, host);
+    s.ts = ts;
+    return s;
+}
+
+void test_expire_no_host() {
+    Dashboard d;
+    TEST_ASSERT_EQUAL(0, d.expire(100000));
+    TEST_ASSERT_EQUAL(0, d.hostCount());
+}
+
+void test_expire_keeps_fresh_host() {
+    Dashboard d;
+    d.apply(withTs("h", 100000), 100000);
+    TEST_ASSERT_EQUAL(0, d.expire(100000 + 60));
+    TEST_ASSERT_EQUAL(1, d.hostCount());
+}
+
+void test_expire_keeps_host_at_limit() {
+    Dashboard d;
+    d.apply(withTs("h", 100000), 100000);
+    TEST_ASSERT_EQUAL(0, d.expire(100000 + FORGET_AFTER_S));
+    TEST_ASSERT_EQUAL(1, d.hostCount());
+}
+
+void test_expire_removes_host_past_limit() {
+    Dashboard d;
+    d.apply(withTs("h", 100000), 100000);
+    TEST_ASSERT_EQUAL(1, d.expire(100000 + FORGET_AFTER_S + 1));
+    TEST_ASSERT_EQUAL(0, d.hostCount());
+    TEST_ASSERT_EQUAL(0, d.sessionCount());
+}
+
+void test_expire_uses_reception_when_ts_unknown() {
+    Dashboard d;
+    d.apply(withTs("h", 0), 100000);
+    TEST_ASSERT_EQUAL(0, d.expire(100000 + FORGET_AFTER_S));
+    TEST_ASSERT_EQUAL(1, d.expire(100000 + FORGET_AFTER_S + 1));
+}
+
+void test_expire_multiple_hosts_keeps_order() {
+    static Dashboard d;  // ~5.6 Ko : hors pile
+    const int64_t now = 100000;
+    const int64_t ts[MAX_HOSTS] = {now - FORGET_AFTER_S - 5, now, now - FORGET_AFTER_S - 1, now - 30};
+    fillHosts(d, ts, now);
+    TEST_ASSERT_EQUAL(2, d.expire(now));
+    TEST_ASSERT_EQUAL(2, d.hostCount());
+    TEST_ASSERT_EQUAL_STRING("h1", d.hostName(0));
+    TEST_ASSERT_EQUAL_STRING("h3", d.hostName(1));
+    TEST_ASSERT_EQUAL(0, d.expire(now));
+}
+
+void test_expired_host_comes_back_as_new_without_alert() {
+    Dashboard d;
+    const int64_t now = 100000;
+    HostSnapshot w = one("h", State::Working, now);
+    d.apply(w, now);
+    const int64_t later = now + FORGET_AFTER_S + 1;
+    TEST_ASSERT_EQUAL(1, d.expire(later));
+    HostSnapshot p = one("h", State::Permission, later);
+    bool changed = false;
+    TEST_ASSERT_EQUAL((int)Alert::None, (int)d.apply(p, later, &changed));
+    TEST_ASSERT_TRUE(changed);
+    TEST_ASSERT_EQUAL(1, d.hostCount());
 }
 
 int main() {
@@ -510,5 +580,12 @@ int main() {
     RUN_TEST(test_changed_when_displayed_limits_switch_host);
     RUN_TEST(test_not_changed_when_host_ignored);
     RUN_TEST(test_changed_when_host_evicts_dead_one);
+    RUN_TEST(test_expire_no_host);
+    RUN_TEST(test_expire_keeps_fresh_host);
+    RUN_TEST(test_expire_keeps_host_at_limit);
+    RUN_TEST(test_expire_removes_host_past_limit);
+    RUN_TEST(test_expire_uses_reception_when_ts_unknown);
+    RUN_TEST(test_expire_multiple_hosts_keeps_order);
+    RUN_TEST(test_expired_host_comes_back_as_new_without_alert);
     return UNITY_END();
 }

@@ -74,4 +74,13 @@ echo "== Étape 4 : SessionEnd"
 hook '{"hook_event_name":"SessionEnd","session_id":"s1"}'
 wait_for "sessions vides publiées" 6 'd["sessions"] == []' || true
 
+echo "== Étape 5 : arrêt propre de l'agent (SIGTERM) : retained effacé"
+if stop_agent; then pass "agent arrêté par SIGTERM"; else fail "agent toujours actif 10 s après SIGTERM"; fi
+if agent_log_has "hôte retiré"; then pass "journal : hôte retiré"; else fail "journal : pas de retrait de l'hôte"; fi
+if [ -z "$(fetch_state)" ]; then
+  pass "plus de message retained sur le topic (message vide publié)"
+else
+  fail "message retained toujours présent après l'arrêt"
+fi
+
 report

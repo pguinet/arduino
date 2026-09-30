@@ -181,7 +181,8 @@ static void onMessage(char *topic, byte *payload, unsigned int len)
     if (!hostFromTopic(topic, host)) return;
 
     if (len == 0) {
-        // Message vide : l'hote est retire.
+        // Message vide : arret propre de l'agent (ou topic retained efface),
+        // l'hote est retire.
         if (dashboard.removeHost(host)) {
             Serial.printf("Hote retire : %s\n", host);
             renderNeeded = true;
@@ -330,6 +331,18 @@ static void pollTouch()
     if ((int32_t)(touchAt - lastActivityMs) > 0) {
         lastActivityMs = touchAt;
         setScreen(true, "toucher");
+    }
+}
+
+// Hotes muets depuis plus de FORGET_AFTER_S (agent plante, serveur en veille) :
+// oublies, pour que l'ecran puisse se mettre en veille et le bandeau disparaitre.
+static void expireHosts()
+{
+    if (!clockValid()) return;
+    int n = dashboard.expire(time(nullptr));
+    if (n > 0) {
+        Serial.printf("Hote oublie apres 1 h sans nouvelles (%d)\n", n);
+        renderNeeded = true;
     }
 }
 
@@ -484,6 +497,7 @@ void loop()
     static uint32_t lastTick = 0;
     if (ms - lastTick >= 1000) {
         lastTick = ms;
+        expireHosts();
         bsp_display_lock(0);
         ui_tick(dashboard, time(nullptr), mqttUp);
         bsp_display_unlock();

@@ -21,7 +21,9 @@ retained de `claude-dash/test/state` avec `mosquitto_sub` :
 2. `Stop` pendant que l'agent tourne → état `idle` en quelques secondes ;
 3. arrêt du broker 10 s puis redémarrage (retained perdu) → l'agent se reconnecte
    et republie aussitôt, bien avant le heartbeat de 60 s ;
-4. `SessionEnd` → `sessions` vide.
+4. `SessionEnd` → `sessions` vide ;
+5. arrêt propre de l'agent (SIGTERM) → journal « hôte retiré » et plus de message
+   retained sur le topic (le message vide publié l'a effacé).
 
 Chaque étape affiche `PASS`/`FAIL` ; le code de sortie est non nul en cas
 d'échec et le journal de l'agent est alors affiché. Conteneurs et réseau sont
@@ -48,7 +50,9 @@ Mosquitto 2 écoute en TLS avec `require_certificate true` ; l'agent a `certfile
    en moins de `heartbeat + 5` s (démarrage du conteneur client compris) ;
 5. un client sans certificat est refusé, et le broker journalise le refus
    (`peer did not return a certificate`) ;
-6. `SessionEnd` → `sessions` vide reçu en direct.
+6. `SessionEnd` → `sessions` vide reçu en direct ;
+7. arrêt propre de l'agent (SIGTERM) → un abonné reçoit un message vide (retrait
+   de l'hôte sur l'écran) et le journal indique « hôte retiré ».
 
 Les fonctions communes aux deux scripts sont dans `dev/it-lib.sh`.
 

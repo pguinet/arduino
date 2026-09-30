@@ -5,7 +5,8 @@
 #   dans un conteneur sous l'uid courant, dans un dossier temporaire supprimé à la fin ;
 # - Mosquitto 2 en TLS avec certificat client obligatoire (require_certificate) ;
 # - agent configuré comme pour Scaleway : certfile/keyfile, client_id = UUID,
-#   retain = false, heartbeat = 5 s.
+#   retain = false, heartbeat = 5 s ;
+# - arrêt propre (SIGTERM) : l'agent publie un message vide (retrait de l'hôte).
 #
 # Affiche PASS/FAIL par étape, code de sortie non nul en cas d'échec.
 set -euo pipefail
@@ -16,6 +17,7 @@ PORT="${CLAUDE_DASH_MQTTS_PORT:-18883}"
 AGENT=claude-dash-it-mtls-agent
 BROKER=claude-dash-it-mtls-broker
 LIVE_SUB=claude-dash-it-mtls-sub
+LEN_SUB=claude-dash-it-mtls-len-sub
 TOPIC=claude-dash/test-mtls/state
 HEARTBEAT=5
 CLIENT_ID=$(cat /proc/sys/kernel/random/uuid)
@@ -31,7 +33,7 @@ cleanup() {
     echo "--- journal du broker ---"
     docker logs "$BROKER" 2>&1 | tail -30 || true
   fi
-  docker rm -f "$AGENT" "$BROKER" "$LIVE_SUB" >/dev/null 2>&1 || true
+  docker rm -f "$AGENT" "$BROKER" "$LIVE_SUB" "$LEN_SUB" >/dev/null 2>&1 || true
   rm -rf "$PKI"
 }
 trap cleanup EXIT
@@ -183,5 +185,21 @@ fi
 echo "== Étape 6 : SessionEnd reçu en direct"
 hook '{"hook_event_name":"SessionEnd","session_id":"s1"}'
 wait_for "sessions vides reçues" 6 'd["sessions"] == []' || true
+
+echo "== Étape 7 : arrêt propre de l'agent (SIGTERM) : message vide reçu"
+# Abonné dédié qui n'affiche que la taille du payload (un message vide = len=0).
+docker rm -f "$LEN_SUB" >/dev/null 2>&1 || true
+docker run -d --name "$LEN_SUB" --network host --user "$(id -u):$(id -g)" \
+  -v "$PKI":/pki:ro "$MQTT_IMAGE" mosquitto_sub "${SCREEN_TLS[@]}" -t "$TOPIC" -F 'len=%l' >/dev/null
+sleep 1
+if stop_agent; then pass "agent arrêté par SIGTERM"; else fail "agent toujours actif 10 s après SIGTERM"; fi
+empty=""
+for _ in $(seq 1 10); do
+  empty=$(docker logs "$LEN_SUB" 2>/dev/null | grep -x 'len=0' || true)
+  [ -n "$empty" ] && break
+  sleep 0.5
+done
+if [ -n "$empty" ]; then pass "message vide reçu par l'écran (hôte retiré)"; else fail "aucun message vide reçu"; fi
+if agent_log_has "hôte retiré"; then pass "journal : hôte retiré"; else fail "journal : pas de retrait de l'hôte"; fi
 
 report

@@ -1,5 +1,7 @@
 import json
 import logging
+import os
+import signal
 import threading
 from pathlib import Path
 from typing import Any
@@ -323,6 +325,22 @@ def make_cfg(**overrides: Any) -> Config:
     return Config(**fields)
 
 
+class FakeInfo:
+    """MQTTMessageInfo minimal : wait_for_publish est enregistré sur le client."""
+
+    def __init__(self, client: "FakeClient") -> None:
+        self._client = client
+        self.rc = client.rc
+
+    def wait_for_publish(self, timeout: float | None = None) -> None:
+        self._client.calls.append(("wait_for_publish", (), {"timeout": timeout}))
+        if self._client.wait_error:
+            raise self._client.wait_error
+
+    def is_published(self) -> bool:
+        return self._client.published
+
+
 class FakeClient:
     """Enregistre les appels faits par l'agent au client paho."""
 
@@ -333,12 +351,14 @@ class FakeClient:
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
         self.connected = True
         self.rc = 0
+        self.published = True
+        self.wait_error: Exception | None = None
         FakeClient.instances.append(self)
 
     def __getattr__(self, name: str) -> Any:
         def record(*args: Any, **kwargs: Any) -> Any:
             self.calls.append((name, args, kwargs))
-            return type("Info", (), {"rc": self.rc})()
+            return FakeInfo(self)
 
         return record
 
@@ -469,3 +489,73 @@ def test_startup_hint_retain_with_mtls(
         agent.log_startup(make_cfg(**overrides))
     assert "agent démarré" in caplog.text
     assert ("retain = false recommandé" in caplog.text) is hinted
+
+
+# --- retrait de l'hôte à l'arrêt propre --------------------------------------
+
+
+@pytest.mark.parametrize("retain", [True, False])
+def test_shutdown_withdraws_host_before_disconnect(retain: bool) -> None:
+    client = FakeClient()
+    agent.shutdown(client, make_cfg(retain=retain))
+    names = [n for n, _, _ in client.calls]
+    assert names == ["publish", "wait_for_publish", "disconnect", "loop_stop"]
+    assert client.called("publish") == [
+        (("claude-dash/srv/state", b""), {"qos": 1, "retain": retain})
+    ]
+    assert client.called("wait_for_publish") == [((), {"timeout": 3})]
+
+
+def test_shutdown_when_disconnected_skips_withdraw() -> None:
+    client = FakeClient()
+    client.connected = False
+    agent.shutdown(client, make_cfg())
+    assert [n for n, _, _ in client.calls] == ["disconnect", "loop_stop"]
+
+
+@pytest.mark.parametrize("error", [RuntimeError("no conn"), ValueError("queue full")])
+def test_shutdown_survives_withdraw_error(
+    error: Exception, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = FakeClient()
+    client.wait_error = error
+    agent.shutdown(client, make_cfg())
+    assert [n for n, _, _ in client.calls][-2:] == ["disconnect", "loop_stop"]
+    assert "retrait" in caplog.text
+
+
+def test_shutdown_warns_when_withdraw_not_acknowledged(caplog: pytest.LogCaptureFixture) -> None:
+    client = FakeClient()
+    client.published = False
+    agent.shutdown(client, make_cfg())
+    assert "retrait" in caplog.text
+    assert client.called("disconnect")
+
+
+def test_run_withdraws_host_on_sigterm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(agent.store, "default_base", lambda: tmp_path)
+    monkeypatch.setattr(agent.time, "sleep", lambda _s: None)
+    ticks: list[int] = []
+
+    def fake_run_once(*args: Any, **kwargs: Any) -> None:
+        ticks.append(1)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    monkeypatch.setattr(agent, "run_once", fake_run_once)
+    client = FakeClient()
+    saved = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        with caplog.at_level(logging.INFO, logger="claude-dash-agent"):
+            agent.run(make_cfg(), client, threading.Event())  # type: ignore[arg-type]
+    finally:
+        for sig, handler in saved.items():
+            signal.signal(sig, handler)
+    assert ticks == [1]
+    assert client.called("publish") == [
+        (("claude-dash/srv/state", b""), {"qos": 1, "retain": True})
+    ]
+    names = [n for n, _, _ in client.calls]
+    assert names.index("publish") < names.index("disconnect")
+    assert "hôte retiré" in caplog.text

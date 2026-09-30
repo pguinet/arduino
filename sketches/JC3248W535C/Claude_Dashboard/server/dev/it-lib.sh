@@ -36,7 +36,28 @@ start_agent_container() {
   '
 }
 
-start_agent() { docker exec -d "$AGENT" sh -c 'exec claude-dash-agent >/tmp/agent.log 2>&1'; }
+# PID de l'agent dans /tmp/agent.pid (exec : le PID du shell devient celui de l'agent).
+start_agent() {
+  docker exec -d "$AGENT" sh -c 'echo $$ >/tmp/agent.pid; exec claude-dash-agent >/tmp/agent.log 2>&1'
+}
+
+# stop_agent : SIGTERM à l'agent (comme systemctl stop), attend sa fin (10 s max).
+# Retourne 0 si l'agent s'est arrêté.
+stop_agent() {
+  # shellcheck disable=SC2016  # script exécuté par le sh du conteneur
+  in_agent sh -c '
+    pid=$(cat /tmp/agent.pid)
+    kill -TERM "$pid"
+    for _ in $(seq 1 20); do
+      kill -0 "$pid" 2>/dev/null || exit 0
+      sleep 0.5
+    done
+    exit 1
+  '
+}
+
+# agent_log_has TEXTE : vrai si le journal de l'agent contient TEXTE.
+agent_log_has() { docker exec "$AGENT" grep -q -- "$1" /tmp/agent.log 2>/dev/null; }
 
 show_agent_log() {
   echo "--- journal de l'agent ---"

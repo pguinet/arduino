@@ -89,9 +89,9 @@ static const Session *findSession(const HostSnapshot &snap, const char *id) {
 }
 
 // Age d'un snapshot : depuis son ts (heure du serveur) s'il est connu, sinon
-// depuis sa reception. Un message retained d'un agent mort depuis longtemps
-// est ainsi perime des sa reception. Borne a 0 (horloge decalee ou non
-// synchronisee).
+// depuis sa reception. Un vieux message (retained ou retarde) d'un agent muet
+// depuis longtemps est ainsi perime des sa reception. Borne a 0 (horloge
+// decalee ou non synchronisee).
 static int64_t snapshotAge(const HostSnapshot &snap, int64_t receivedAt, int64_t now) {
     int64_t age = now - (snap.ts > 0 ? snap.ts : receivedAt);
     return age < 0 ? 0 : age;
@@ -147,8 +147,8 @@ Alert Dashboard::apply(const HostSnapshot &snap, int64_t now, bool *changed) {
         idx = count_++;
     } else {
         // Tableau plein : reprendre le slot de l'hote muet depuis le plus
-        // longtemps, s'il l'est depuis plus de EVICT_AFTER_S.
-        int64_t oldest = EVICT_AFTER_S;
+        // longtemps, s'il l'est depuis plus de FORGET_AFTER_S.
+        int64_t oldest = FORGET_AFTER_S;
         for (int i = 0; i < count_; i++) {
             int64_t age = snapshotAge(hosts_[i].snap, hosts_[i].receivedAt, now);
             if (age > oldest) {
@@ -179,6 +179,18 @@ bool Dashboard::removeHost(const char *host) {
         return true;
     }
     return false;
+}
+
+int Dashboard::expire(int64_t now) {
+    int kept = 0;
+    for (int i = 0; i < count_; i++) {
+        if (snapshotAge(hosts_[i].snap, hosts_[i].receivedAt, now) > FORGET_AFTER_S) continue;
+        if (kept != i) hosts_[kept] = hosts_[i];
+        kept++;
+    }
+    int removed = count_ - kept;
+    count_ = kept;
+    return removed;
 }
 
 int Dashboard::rows(Row *out, int max) const {

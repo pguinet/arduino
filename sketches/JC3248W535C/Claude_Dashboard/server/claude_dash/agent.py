@@ -184,7 +184,7 @@ def _make_client(cfg: Config, connected: threading.Event) -> mqtt.Client:
 
 
 def make_sender(client: Any, cfg: Config) -> Callable[[str], None]:
-    """Fonction d'envoi du snapshot (QoS 1, retained si le broker le permet)."""
+    """Fonction d'envoi du snapshot (QoS 1 ; retain selon la config, false sur Scaleway)."""
 
     def send(payload: str) -> None:
         if not client.is_connected():
@@ -212,6 +212,32 @@ def log_startup(cfg: Config) -> None:
         log.info("broker stateless (ex. Scaleway Shared) : retain = false recommandé")
 
 
+WITHDRAW_TIMEOUT_S = 3
+
+
+def shutdown(client: Any, cfg: Config) -> None:
+    """Arrêt propre : publie un message vide sur le topic de l'hôte, puis déconnecte.
+
+    L'écran retire aussitôt l'hôte à la réception d'un payload vide ; avec un broker
+    à retained, le message vide efface aussi le snapshot retenu. Sans connexion,
+    l'écran l'oubliera de lui-même après une heure sans nouvelles.
+    """
+    if client.is_connected():
+        try:
+            info = client.publish(cfg.topic, b"", qos=1, retain=cfg.retain)
+            info.wait_for_publish(timeout=WITHDRAW_TIMEOUT_S)
+            if info.is_published():
+                log.info("hôte retiré de l'écran (%s)", cfg.topic)
+            else:
+                log.warning("retrait de l'hôte non confirmé après %s s", WITHDRAW_TIMEOUT_S)
+        except (RuntimeError, ValueError, OSError) as exc:
+            log.warning("retrait de l'hôte impossible: %s", exc)
+    else:
+        log.info("arrêt sans connexion MQTT : retrait de l'hôte non publié")
+    client.disconnect()
+    client.loop_stop()
+
+
 def run(cfg: Config, client: mqtt.Client, connected: threading.Event) -> None:
     base = store.default_base()
     publisher = make_publisher(make_sender(client, cfg), cfg)
@@ -231,8 +257,7 @@ def run(cfg: Config, client: mqtt.Client, connected: threading.Event) -> None:
             publisher.force()  # republier tout de suite après (re)connexion
         run_once(base, cfg.hostname, publisher, int(time.time()), time.monotonic(), outage=outage)
         time.sleep(1)
-    client.disconnect()
-    client.loop_stop()
+    shutdown(client, cfg)
 
 
 def main() -> None:
