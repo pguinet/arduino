@@ -1609,6 +1609,8 @@ cp $T/src/esp_bsp.c $T/src/esp_lcd_axs15231b.c $T/src/esp_lcd_touch.c $T/src/lv_
 ln -s /home/pascal/github/arduino/sketches/common/credentials.h $FW/src/credentials.h
 ```
 
+Note : le symlink `credentials.h` est couvert par `**/credentials.h` du `.gitignore` : il reste local (non versionne), comme dans les autres sketches.
+
 **Step 2: `platformio.ini`**
 
 ```ini
@@ -1681,11 +1683,11 @@ lib_deps =
 #include "esp_bsp.h"
 #include "lv_port.h"
 
-#define LVGL_PORT_ROTATION_DEGREE (270)
-
 void setup()
 {
     Serial.begin(115200);
+
+    // Paysage (480x320) : rotation 270 comme Transit_Tracker
     bsp_display_cfg_t cfg = {
         .lvgl_port_cfg = ESP_LVGL_PORT_INIT_CONFIG(),
         .buffer_size = EXAMPLE_LCD_QSPI_H_RES * EXAMPLE_LCD_QSPI_V_RES,
