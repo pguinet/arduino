@@ -47,3 +47,16 @@ tls = false
 [agent]
 hostname = "test"
 ```
+
+## Test de `install.sh`
+
+```bash
+./dev/test-install.sh                                  # depuis server/
+CLAUDE_DASH_EXTRA_SETTINGS=~/.claude/settings.json ./dev/test-install.sh
+```
+
+Lance `install.sh` dans un conteneur `python:3.13-slim` (+ jq) sous un utilisateur
+non root au `HOME` vide, dépôt monté en lecture seule : fusion et retrait des hooks
+sur `fixtures/settings.json` (et, en option, sur une copie en lecture seule d'un
+vrai `settings.json`), cas limites (JSON invalide, lien symbolique…), installation
+complète sans systemd, réinstallation et désinstallation.

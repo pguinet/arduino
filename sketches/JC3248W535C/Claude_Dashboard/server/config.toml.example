@@ -1,0 +1,17 @@
+# Configuration de claude-dash-agent : ~/.config/claude-dash/config.toml
+# Ce fichier contient un mot de passe : il DOIT rester en chmod 600
+# (l'agent refuse de démarrer sinon).
+
+[mqtt]
+host = "votre_host"                 # ex. xxxx.s1.eu.hivemq.cloud
+port = 8883
+username = "votre_user"             # compte "serveur" : publish claude-dash/<host>/#
+password = "votre_mot_de_passe"
+tls = true                          # false uniquement pour un Mosquitto local de test
+# ca_certs = "/etc/ssl/certs/ca-certificates.crt"   # défaut : CA système
+topic_prefix = "claude-dash"
+
+[agent]
+# Nom publié (client id MQTT claude-dash-<hostname> et topic claude-dash/<hostname>/state).
+# Défaut : nom court de la machine. Il doit être UNIQUE sur le broker.
+# hostname = "srv-dev"

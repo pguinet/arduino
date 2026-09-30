@@ -1486,6 +1486,8 @@ git commit -m "Claude_Dashboard: environnement de test Mosquitto"
 - Create: `$SRV/claude-dash-agent.service`
 - Create: `$SRV/config.toml.example`
 - Create: `$SRV/README.md`
+- Create: `$SRV/dev/test-install.sh`, `$SRV/dev/fixtures/settings.json`
+- Modify: `$SRV/claude_dash/agent.py`, `$SRV/tests/test_agent.py`, `$SRV/.gitignore` (`build/`)
 
 La statusline appelle le collecteur au premier plan (`timeout 1`, sans `&`) : lancé en arrière-plan, il est réadopté par `systemd --user` et ne retrouve presque jamais le PID de Claude.
 
@@ -1494,7 +1496,6 @@ La statusline appelle le collecteur au premier plan (`timeout 1`, sans `&`) : la
 ```ini
 [Unit]
 Description=Claude Code dashboard agent (MQTT)
-After=network-online.target
 
 [Service]
 ExecStart=%h/.local/bin/claude-dash-agent
@@ -1505,70 +1506,54 @@ RestartSec=10
 WantedBy=default.target
 ```
 
+(`After=network-online.target` retiré : sans effet dans le gestionnaire utilisateur ;
+l'agent se reconnecte seul.)
+
 **Step 2: `config.toml.example`** — le contenu TOML de la Task 5 avec des placeholders (`votre_host`, `votre_user`, `votre_mot_de_passe`) et `tls = true`.
 
-**Step 3: `install.sh`**
+**Step 3: `install.sh`** (écarts par rapport à l'esquisse initiale)
 
-```bash
-#!/usr/bin/env bash
-# Installe l'agent claude-dash pour l'utilisateur courant (sans sudo).
-set -euo pipefail
-HERE="$(cd "$(dirname "$0")" && pwd)"
-VENV="$HOME/.local/share/claude-dash/venv"
-BIN="$HOME/.local/bin"
-CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claude-dash"
-UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-SETTINGS="$HOME/.claude/settings.json"
+Le script réel (`$SRV/install.sh`) reprend le principe (venv `~/.local/share/claude-dash/venv`,
+liens dans `~/.local/bin`, config `install -m 600` jamais écrasée, unit dans
+`~/.config/systemd/user`) avec :
 
-command -v jq >/dev/null || { echo "jq requis" >&2; exit 1; }
-
-python3 -m venv "$VENV"
-"$VENV/bin/pip" install -q --upgrade "$HERE"
-mkdir -p "$BIN"
-for cmd in claude-dash-hook claude-dash-statusline claude-dash-agent; do
-  ln -sf "$VENV/bin/$cmd" "$BIN/$cmd"
-done
-
-mkdir -p "$CONF_DIR"
-if [ ! -f "$CONF_DIR/config.toml" ]; then
-  install -m 600 "$HERE/config.toml.example" "$CONF_DIR/config.toml"
-  echo ">> Renseigne $CONF_DIR/config.toml puis relance : systemctl --user restart claude-dash-agent"
-fi
-
-# Hooks Claude Code (fusion idempotente, sauvegarde préalable)
-mkdir -p "$(dirname "$SETTINGS")"
-[ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
-cp "$SETTINGS" "$SETTINGS.bak-claude-dash"
-HOOK="$BIN/claude-dash-hook"
-jq --arg cmd "$HOOK" '
-  reduce ("SessionStart","UserPromptSubmit","PreToolUse","PostToolUse","Notification","Stop","SessionEnd") as $ev
-    (.; .hooks[$ev] = (
-      ((.hooks[$ev] // []) | map(select(any(.hooks[]?; .command == $cmd) | not)))
-      + [{"hooks": [{"type": "command", "command": $cmd, "timeout": 5}]}]
-    ))' "$SETTINGS.bak-claude-dash" > "$SETTINGS"
-
-mkdir -p "$UNIT_DIR"
-cp "$HERE/claude-dash-agent.service" "$UNIT_DIR/"
-systemctl --user daemon-reload
-systemctl --user enable --now claude-dash-agent
-
-cat <<EOF
-
-Installation terminee.
-1. Ajoute a ta statusline, juste apres la lecture de stdin (input=\$(cat)) :
-     printf '%s' "\$input" | timeout 1 $BIN/claude-dash-statusline >/dev/null 2>&1
-   (sans statusline : voir README pour en creer une minimale)
-2. Pour que l'agent tourne sans session SSH ouverte :
-     loginctl enable-linger \$USER
-3. Logs : journalctl --user -u claude-dash-agent -f
-EOF
-```
+- trois modes : installation (défaut, idempotente), `--hooks-only`, `--uninstall` ;
+- vérifications : `jq`, Python ≥ 3.11 et module `venv` (variable `PYTHON`) ;
+  `CLAUDE_CONFIG_DIR` respecté pour `settings.json` ;
+- fusion jq : entrées `claude-dash-hook` reconnues par leur commande (`(^|/)claude-dash-hook$`,
+  quel que soit le chemin), retirées au niveau du hook (les hooks tiers d'un même groupe
+  restent), puis une entrée sans `matcher` par événement (7 événements, `timeout: 5`) ;
+- `settings.json` validé avant fusion (objet, `hooks` objet de tableaux) : sinon arrêt
+  sans rien toucher ; réécriture seulement si le contenu change, après sauvegarde horodatée
+  `settings.json.bak-claude-dash-AAAAMMJJ-HHMMSS` (une sauvegarde unique écrasée à chaque
+  passage perdait l'original) ; écriture par `cat >` pour conserver droits et lien symbolique ;
+- `pip install --upgrade` puis `--force-reinstall --no-deps` (même numéro de version après
+  un `git pull`) ;
+- systemd : si `systemctl --user show-environment` échoue (conteneur, pas de bus), l'unit est
+  copiée mais pas activée, avec un message ; sinon `enable`, et `restart` seulement si la
+  config ne contient plus de placeholder `votre_` ;
+- `--uninstall` : retire nos hooks (supprime les tableaux d'événement vidés, puis `hooks` si
+  vide), `disable --now` + suppression de l'unit, du venv et de nos liens ; conserve config,
+  store et sauvegardes ; ne crée pas `settings.json` s'il est absent ; idempotent.
 
 `chmod +x install.sh`. Vérifier avec `shellcheck` en Docker :
-`docker run --rm -v "$PWD/$SRV":/mnt koalaman/shellcheck:stable /mnt/install.sh /mnt/run-checks.sh`
+`docker run --rm -v "$PWD/$SRV":/mnt koalaman/shellcheck:stable /mnt/install.sh /mnt/run-checks.sh /mnt/dev/integration-test.sh /mnt/dev/test-install.sh`
 Expected : aucun avertissement (corriger sinon).
 
-**Step 4: Tester la fusion jq** sur un faux `settings.json` contenant les hooks rtk existants (copie de `~/.claude/settings.json` dans le scratchpad, `HOME` redirigé) : vérifier que les hooks `PreToolUse` rtk sont conservés et qu'un second passage n'ajoute pas de doublon (`jq '.hooks.PreToolUse | length'` identique après deux exécutions). Ne pas lancer la partie systemd dans ce test : isoler la fusion jq dans une fonction `merge_hooks` appelable via `install.sh --hooks-only` si nécessaire.
+**Step 4: Tester l'installation** — `$SRV/dev/test-install.sh` (Docker `python:3.13-slim` + jq,
+utilisateur non root, `HOME` fictif, dépôt monté en lecture seule) : fusion sur la fixture
+synthétique `dev/fixtures/settings.json` (hooks rtk-like, hook `Stop` tiers partagé avec une
+ancienne entrée claude-dash, `PreCompact`, statusLine…) : 7 entrées uniques, hooks tiers et reste
+du fichier conservés, sauvegarde, second passage sans écriture ; désinstallation (et
+install + uninstall = original) ; cas limites (JSON invalide, `hooks` non objet, fichier absent,
+lien symbolique, droits) ; installation complète sans systemd puis réinstallation (config
+conservée, remise en 600) et désinstallation. `CLAUDE_DASH_EXTRA_SETTINGS=~/.claude/settings.json`
+rejoue la fusion sur une copie en lecture seule d'un vrai fichier (jamais versionné).
+Expected : `RÉSULTAT : PASS`.
+
+**Step 4b: Agent** — au démarrage, avant la première connexion MQTT, les échecs de publication
+(« MQTT non connecté ») sont journalisés en DEBUG pendant `startup_grace` (30 s) puis en WARNING
+(une fois) : tests `test_startup_failures_*` dans `test_agent.py`.
 
 **Step 5: `README.md`** — architecture (schéma du design), prérequis (Python ≥ 3.11, jq, systemd user), étapes d'installation, config broker et ACL recommandées (compte serveur : publish `claude-dash/<host>/#` ; compte écran : subscribe `claude-dash/#`), exemple de statusline minimale :
 
