@@ -2805,7 +2805,7 @@ UI séparée de `main.cpp` pour garder des fichiers lisibles. Toutes les fonctio
 
 void ui_create();
 // Reconstruit quotas + cartes a partir du modele (appel a chaque snapshot).
-void ui_render(const dash::Dashboard &d, time_t now);
+void ui_render(const dash::Dashboard &d, time_t now, bool mqttOk);
 // Met a jour horloge, chronos et bandeau (appel chaque seconde).
 void ui_tick(const dash::Dashboard &d, time_t now, bool mqttOk);
 ```
@@ -2998,7 +2998,7 @@ static void addCard(const Row &r, bool showHost, time_t now) {
     (void)now;
 }
 
-void ui_render(const Dashboard &d, time_t now) {
+void ui_render(const Dashboard &d, time_t now, bool mqttOk) {
     const Limits *lim = d.limits();
     renderLimit(bar5h, pct5h, reset5h, lim ? lim->h5 : -1, lim ? lim->h5Reset : 0, false);
     renderLimit(bar7d, pct7d, reset7d, lim ? lim->d7 : -1, lim ? lim->d7Reset : 0, true);
@@ -3019,7 +3019,7 @@ void ui_render(const Dashboard &d, time_t now) {
     if (n == 0) lv_obj_clear_flag(lblEmpty, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(lblEmpty, LV_OBJ_FLAG_HIDDEN);
 
-    ui_tick(d, now, true);
+    ui_tick(d, now, mqttOk);
 }
 
 void ui_tick(const Dashboard &d, time_t now, bool mqttOk) {
@@ -3047,9 +3047,15 @@ void ui_tick(const Dashboard &d, time_t now, bool mqttOk) {
 }
 ```
 
-Note : `mqttOk` n'est vraiment connu que de `main.cpp` ; `ui_render` passe `true` puis le tick suivant (≤ 1 s) corrige.
+**Écarts appliqués à l'implémentation (voir `$FW/src/ui.cpp`, qui fait foi) :**
+- `ui_render(d, now, mqttOk)` reçoit l'état MQTT et le transmet à `ui_tick` : pas de pastille verte fugitive quand le broker est déconnecté.
+- Barres 5h/7j et ctx passent par un helper `setPercent` : valeur < 0 = barre vide et `--` (jamais `colorForPercent(-1)`). La barre ctx est toujours affichée (avec `--` si inconnu) pour garder des cartes homogènes.
+- Chrono vide si `since` inconnu (0) ou horloge non synchronisée ; horloge d'en-tête `--:--` tant que l'heure n'est pas valide.
+- Modèle, état et outil ont une largeur bornée (`LV_LABEL_LONG_DOT`) pour ne pas chevaucher le chrono ; nom d'hôte d'en-tête borné aussi.
+- `Row rows[MAX_ROWS]` est `static` dans `ui_render` (évite ~400 o de pile).
+- Mémoire LVGL : `lv_conf.h` a `LV_MEM_CUSTOM 1` (malloc), donc `LV_MEM_SIZE` ne s'applique pas et `lv_mem_monitor` ne renvoie rien d'utile. On mesure le tas interne : ~11 Ko pour l'UI avec 3 cartes, ~18 Ko avec 6 cartes (~2,4 Ko/carte), stable sur reconstructions répétées.
 
-**Step 3: Écran de démo dans `main.cpp`** — temporairement, construire un `HostSnapshot` factice (3 sessions : permission/idle/working, quotas 42/18) via `parseSnapshot` sur une chaîne littérale, `apply()` puis `ui_render()`, et appeler `ui_tick()` chaque seconde dans `loop()` (sous `bsp_display_lock`). Configurer le fuseau (`setenv("TZ","CET-1CEST,M3.5.0,M10.5.0/3",1); tzset();`).
+**Step 3: Écran de démo dans `main.cpp`** — temporaire, isolé dans `loadDemo()` (supprimé en Task 13) : règle l'horloge système sur une date fixe (`settimeofday`, 2026-09-30 14:32 heure de Paris, pas de NTP), construit des snapshots via `parseSnapshot` sur des chaînes littérales puis `apply()`. `#define DEMO_MULTI 0` : 1 hôte `srv-dev`, 3 sessions (permission/idle/working, l'idle sans ctx), quotas 42/18 avec heures de reset ; `DEMO_MULTI 1` ajoute l'hôte `laptop` et 3 sessions (6 cartes, défilement, libellés `projet@hote`). `ui_tick()` chaque seconde et `ui_render()` toutes les 5 s dans `loop()` (sous `bsp_display_lock`), avec trace du tas sur la série pour détecter une fuite. Fuseau : `setenv("TZ","CET-1CEST,M3.5.0,M10.5.0/3",1); tzset();`.
 
 **Step 4: Compiler, flasher, vérifier visuellement**
 
@@ -3059,7 +3065,7 @@ Expected : écran conforme à la maquette du design (3 cartes triées rouge/oran
 **Step 5: Commit**
 
 ```bash
-git add $FW/src
+git add $FW/src $FW/platformio.ini docs/plans/2026-09-30-claude-dashboard.md
 git commit -m "Claude_Dashboard: interface LVGL (quotas, cartes de session, bandeau)"
 ```
 
