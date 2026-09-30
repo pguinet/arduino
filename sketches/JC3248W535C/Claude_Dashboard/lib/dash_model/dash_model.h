@@ -52,7 +52,8 @@ bool parseSnapshot(const char *json, size_t len, HostSnapshot &out);
 
 class Dashboard {
 public:
-    // Integre un snapshot recu a `now` (epoch local). Retourne l'alerte a jouer.
+    // Integre un snapshot recu a `now` (epoch local). Retourne l'alerte a jouer
+    // (aucune si le snapshot precedent de cet hote etait deja perime).
     Alert apply(const HostSnapshot &snap, int64_t now);
     // Lignes triees par urgence (permission > idle > working) puis anciennete.
     int rows(Row *out, int max) const;
@@ -60,7 +61,8 @@ public:
     const Limits *limits() const;
     int hostCount() const { return count_; }
     const char *hostName(int i) const { return hosts_[i].snap.host; }
-    // Plus vieux delai depuis la derniere reception parmi les hotes (0 si aucun).
+    // Age maximal parmi les hotes (0 si aucun) : now - snap.ts, ou now - reception
+    // si ts inconnu ; borne a 0.
     int64_t staleSeconds(int64_t now) const;
     bool anyWaiting() const;
 

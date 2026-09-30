@@ -72,17 +72,109 @@ bool parseSnapshot(const char *json, size_t len, HostSnapshot &out) {
     return true;
 }
 
-// --- Stubs : implementes par les Tasks 10 (Dashboard) et 11 (helpers) ---
+// --- Dashboard : agregation multi-hote, tri, transitions, staleness ---
 
-Alert Dashboard::apply(const HostSnapshot &, int64_t) { return Alert::None; }
+static int urgency(State s) {
+    switch (s) {
+        case State::Permission: return 0;
+        case State::Idle: return 1;
+        default: return 2;
+    }
+}
 
-int Dashboard::rows(Row *, int) const { return 0; }
+static const Session *findSession(const HostSnapshot &snap, const char *id) {
+    for (int i = 0; i < snap.count; i++)
+        if (strcmp(snap.sessions[i].id, id) == 0) return &snap.sessions[i];
+    return nullptr;
+}
 
-const Limits *Dashboard::limits() const { return nullptr; }
+// Age d'un snapshot : depuis son ts (heure du serveur) s'il est connu, sinon
+// depuis sa reception. Un message retained d'un agent mort depuis longtemps
+// est ainsi perime des sa reception. Borne a 0 (horloge decalee ou non
+// synchronisee).
+static int64_t snapshotAge(const HostSnapshot &snap, int64_t receivedAt, int64_t now) {
+    int64_t age = now - (snap.ts > 0 ? snap.ts : receivedAt);
+    return age < 0 ? 0 : age;
+}
 
-int64_t Dashboard::staleSeconds(int64_t) const { return 0; }
+Alert Dashboard::apply(const HostSnapshot &snap, int64_t now) {
+    int idx = -1;
+    for (int i = 0; i < count_; i++)
+        if (strcmp(hosts_[i].snap.host, snap.host) == 0) idx = i;
 
-bool Dashboard::anyWaiting() const { return false; }
+    Alert alert = Alert::None;
+    if (idx >= 0) {
+        const HostSnapshot &prev = hosts_[idx].snap;
+        // Snapshot precedent deja perime : ses etats n'etaient plus fiables,
+        // pas de salve de bips au retour du serveur.
+        bool prevStale = snapshotAge(prev, hosts_[idx].receivedAt, now) > STALE_AFTER_S;
+        for (int i = 0; i < snap.count && !prevStale; i++) {
+            const Session &cur = snap.sessions[i];
+            const Session *old = findSession(prev, cur.id);
+            if (!old || old->state == cur.state) continue;
+            if (cur.state == State::Permission) alert = Alert::Permission;
+            else if (cur.state == State::Idle && alert == Alert::None) alert = Alert::Idle;
+        }
+    } else {
+        if (count_ >= MAX_HOSTS) return Alert::None;  // hote ignore
+        idx = count_++;
+    }
+    hosts_[idx].snap = snap;
+    hosts_[idx].receivedAt = now;
+    return alert;
+}
+
+int Dashboard::rows(Row *out, int max) const {
+    int n = 0;
+    for (int h = 0; h < count_; h++)
+        for (int i = 0; i < hosts_[h].snap.count && n < max; i++)
+            out[n++] = {&hosts_[h].snap.sessions[i], hosts_[h].snap.host};
+
+    // Ordre strict : a egalite, l'ordre d'origine est conserve (tri stable).
+    auto before = [](const Row &a, const Row &b) {
+        int ua = urgency(a.session->state), ub = urgency(b.session->state);
+        return ua != ub ? ua < ub : a.session->since < b.session->since;
+    };
+    // Tri par insertion (n <= MAX_ROWS = 48)
+    for (int i = 1; i < n; i++) {
+        Row r = out[i];
+        int j = i - 1;
+        while (j >= 0 && before(r, out[j])) {
+            out[j + 1] = out[j];
+            j--;
+        }
+        out[j + 1] = r;
+    }
+    return n;
+}
+
+const Limits *Dashboard::limits() const {
+    const HostSnapshot *best = nullptr;
+    for (int i = 0; i < count_; i++) {
+        const HostSnapshot &s = hosts_[i].snap;
+        if (s.limits.h5 < 0 && s.limits.d7 < 0) continue;
+        if (!best || s.ts > best->ts) best = &s;
+    }
+    return best ? &best->limits : nullptr;
+}
+
+int64_t Dashboard::staleSeconds(int64_t now) const {
+    int64_t worst = 0;
+    for (int i = 0; i < count_; i++) {
+        int64_t age = snapshotAge(hosts_[i].snap, hosts_[i].receivedAt, now);
+        if (age > worst) worst = age;
+    }
+    return worst;
+}
+
+bool Dashboard::anyWaiting() const {
+    for (int h = 0; h < count_; h++)
+        for (int i = 0; i < hosts_[h].snap.count; i++)
+            if (hosts_[h].snap.sessions[i].state != State::Working) return true;
+    return false;
+}
+
+// --- Stubs : implementes par la Task 11 (helpers) ---
 
 void formatDuration(int64_t, char *out, size_t size) {
     if (size) out[0] = '\0';

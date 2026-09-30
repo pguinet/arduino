@@ -2019,7 +2019,8 @@ bool parseSnapshot(const char *json, size_t len, HostSnapshot &out);
 
 class Dashboard {
 public:
-    // Integre un snapshot recu a `now` (epoch local). Retourne l'alerte a jouer.
+    // Integre un snapshot recu a `now` (epoch local). Retourne l'alerte a jouer
+    // (aucune si le snapshot precedent de cet hote etait deja perime).
     Alert apply(const HostSnapshot &snap, int64_t now);
     // Lignes triees par urgence (permission > idle > working) puis anciennete.
     int rows(Row *out, int max) const;
@@ -2027,7 +2028,8 @@ public:
     const Limits *limits() const;
     int hostCount() const { return count_; }
     const char *hostName(int i) const { return hosts_[i].snap.host; }
-    // Plus vieux delai depuis la derniere reception parmi les hotes (0 si aucun).
+    // Age maximal parmi les hotes (0 si aucun) : now - snap.ts, ou now - reception
+    // si ts inconnu ; borne a 0.
     int64_t staleSeconds(int64_t now) const;
     bool anyWaiting() const;
 
@@ -2154,7 +2156,12 @@ git commit -m "Claude_Dashboard: parsing du snapshot MQTT (modele natif teste)"
 Règles des alertes :
 - alerte uniquement si la session était **déjà connue** avec un autre état (pas de bip au démarrage sur le message retained, ni pour une nouvelle session) ;
 - passage vers `Permission` → `Alert::Permission` ; passage vers `Idle` depuis `Working` ou `Permission` → `Alert::Idle` ;
-- plusieurs transitions dans un même snapshot : `Permission` l'emporte.
+- plusieurs transitions dans un même snapshot : `Permission` l'emporte ;
+- aucune alerte si le snapshot précédent de cet hôte était déjà périmé (âge > `STALE_AFTER_S` à l'arrivée du nouveau) : pas de salve de bips au retour du serveur, l'utilisateur ne suivait plus ces états.
+
+Staleness : l'âge d'un hôte se mesure depuis le `ts` du snapshot (heure du serveur) et non depuis sa réception. Au démarrage de l'écran, le broker livre le message **retained** d'un agent peut-être mort depuis longtemps ; jugé à la réception, il paraîtrait frais pendant 3 min. Règle : `age = now - (snap.ts > 0 ? snap.ts : receivedAt)`, borné à 0 (horloge décalée ou non synchronisée) ; `staleSeconds` retourne le max sur les hôtes (0 si aucun). `receivedAt` reste le repli quand `ts` est absent.
+
+(Écart par rapport à la première version du plan : staleness sur `ts`, pas d'alerte après un snapshot périmé, tri stable avec le comparateur défini hors de la boucle ; tests ajoutés pour ces règles, la borne `age == STALE_AFTER_S`, la stabilité du tri et le plafond `max` de `rows()`.)
 
 **Step 1: Tests** (helper `mk(host, {id,state,since}...)` construisant un `HostSnapshot` à la main)
 
@@ -2228,6 +2235,38 @@ void test_permission_wins_over_idle() {
     TEST_ASSERT_EQUAL((int)Alert::Permission, (int)d.apply(mk("h", 2, ids, after, t), 102));
 }
 
+void test_no_alert_when_previous_snapshot_was_stale() {
+    // Retour du serveur apres une longue coupure : pas de salve de bips.
+    Dashboard d;
+    const char *ids[] = {"a"};
+    State w[] = {State::Working}, p[] = {State::Permission}, i[] = {State::Idle};
+    int64_t t[] = {1};
+    HostSnapshot s = mk("h", 1, ids, w, t);
+    s.ts = 100;
+    d.apply(s, 100);
+    s = mk("h", 1, ids, p, t);
+    s.ts = 100 + STALE_AFTER_S + 1;
+    TEST_ASSERT_EQUAL((int)Alert::None, (int)d.apply(s, 100 + STALE_AFTER_S + 1));
+    // le snapshot suivant est frais : les transitions alertent a nouveau
+    s = mk("h", 1, ids, i, t);
+    s.ts = 100 + STALE_AFTER_S + 3;
+    TEST_ASSERT_EQUAL((int)Alert::Idle, (int)d.apply(s, 100 + STALE_AFTER_S + 3));
+}
+
+void test_alert_when_previous_snapshot_at_stale_limit() {
+    // age == STALE_AFTER_S : pas encore perime
+    Dashboard d;
+    const char *ids[] = {"a"};
+    State w[] = {State::Working}, p[] = {State::Permission};
+    int64_t t[] = {1};
+    HostSnapshot s = mk("h", 1, ids, w, t);
+    s.ts = 100;
+    d.apply(s, 100);
+    s = mk("h", 1, ids, p, t);
+    s.ts = 100 + STALE_AFTER_S;
+    TEST_ASSERT_EQUAL((int)Alert::Permission, (int)d.apply(s, 100 + STALE_AFTER_S));
+}
+
 void test_rows_sorted_by_urgency_then_age() {
     Dashboard d;
     const char *ids[] = {"w", "i_new", "p", "i_old"};
@@ -2242,6 +2281,31 @@ void test_rows_sorted_by_urgency_then_age() {
     TEST_ASSERT_EQUAL_STRING("i_new", rows[2].session->id);
     TEST_ASSERT_EQUAL_STRING("w", rows[3].session->id);
     TEST_ASSERT_EQUAL_STRING("h", rows[0].host);
+}
+
+void test_rows_sort_is_stable() {
+    // meme urgence et meme anciennete : ordre d'origine conserve
+    Dashboard d;
+    const char *ids[] = {"x1", "w", "x2", "x3"};
+    State st[] = {State::Idle, State::Working, State::Idle, State::Idle};
+    int64_t since[] = {5, 1, 5, 5};
+    d.apply(mk("h", 4, ids, st, since), 100);
+    Row rows[MAX_ROWS];
+    TEST_ASSERT_EQUAL(4, d.rows(rows, MAX_ROWS));
+    TEST_ASSERT_EQUAL_STRING("x1", rows[0].session->id);
+    TEST_ASSERT_EQUAL_STRING("x2", rows[1].session->id);
+    TEST_ASSERT_EQUAL_STRING("x3", rows[2].session->id);
+    TEST_ASSERT_EQUAL_STRING("w", rows[3].session->id);
+}
+
+void test_rows_capped_by_max() {
+    Dashboard d;
+    const char *ids[] = {"a", "b", "c"};
+    State st[] = {State::Idle, State::Idle, State::Idle};
+    int64_t since[] = {1, 2, 3};
+    d.apply(mk("h", 3, ids, st, since), 100);
+    Row rows[2];
+    TEST_ASSERT_EQUAL(2, d.rows(rows, 2));
 }
 
 void test_multi_host_and_latest_limits() {
@@ -2266,12 +2330,45 @@ void test_limits_null_when_never_received() {
 }
 
 void test_stale_seconds() {
+    // snapshot sans ts : repli sur l'heure de reception
     Dashboard d;
     TEST_ASSERT_EQUAL(0, (long)d.staleSeconds(1000));
     HostSnapshot s;
     strcpy(s.host, "h");
     d.apply(s, 1000);
     TEST_ASSERT_EQUAL(200, (long)d.staleSeconds(1200));
+}
+
+void test_stale_seconds_uses_snapshot_ts() {
+    // message retained d'un agent mort depuis longtemps, recu maintenant : perime
+    Dashboard d;
+    HostSnapshot s;
+    strcpy(s.host, "h");
+    s.ts = 100;
+    d.apply(s, 1000);
+    TEST_ASSERT_EQUAL(900, (long)d.staleSeconds(1000));
+}
+
+void test_stale_seconds_future_ts_clamped() {
+    // horloge non synchronisee ou decalee : jamais d'age negatif
+    Dashboard d;
+    HostSnapshot s;
+    strcpy(s.host, "h");
+    s.ts = 2000;
+    d.apply(s, 1000);
+    TEST_ASSERT_EQUAL(0, (long)d.staleSeconds(1000));
+}
+
+void test_stale_seconds_max_over_hosts() {
+    Dashboard d;
+    HostSnapshot s;
+    strcpy(s.host, "h1");
+    s.ts = 900;
+    d.apply(s, 1000);
+    strcpy(s.host, "h2");
+    s.ts = 500;
+    d.apply(s, 1000);
+    TEST_ASSERT_EQUAL(500, (long)d.staleSeconds(1000));
 }
 
 void test_any_waiting() {
@@ -2292,10 +2389,17 @@ int main() {
     RUN_TEST(test_alert_idle_after_working);
     RUN_TEST(test_new_session_no_alert);
     RUN_TEST(test_permission_wins_over_idle);
+    RUN_TEST(test_no_alert_when_previous_snapshot_was_stale);
+    RUN_TEST(test_alert_when_previous_snapshot_at_stale_limit);
     RUN_TEST(test_rows_sorted_by_urgency_then_age);
+    RUN_TEST(test_rows_sort_is_stable);
+    RUN_TEST(test_rows_capped_by_max);
     RUN_TEST(test_multi_host_and_latest_limits);
     RUN_TEST(test_limits_null_when_never_received);
     RUN_TEST(test_stale_seconds);
+    RUN_TEST(test_stale_seconds_uses_snapshot_ts);
+    RUN_TEST(test_stale_seconds_future_ts_clamped);
+    RUN_TEST(test_stale_seconds_max_over_hosts);
     RUN_TEST(test_any_waiting);
     return UNITY_END();
 }
@@ -2320,6 +2424,15 @@ static const Session *findSession(const HostSnapshot &snap, const char *id) {
     return nullptr;
 }
 
+// Age d'un snapshot : depuis son ts (heure du serveur) s'il est connu, sinon
+// depuis sa reception. Un message retained d'un agent mort depuis longtemps
+// est ainsi perime des sa reception. Borne a 0 (horloge decalee ou non
+// synchronisee).
+static int64_t snapshotAge(const HostSnapshot &snap, int64_t receivedAt, int64_t now) {
+    int64_t age = now - (snap.ts > 0 ? snap.ts : receivedAt);
+    return age < 0 ? 0 : age;
+}
+
 Alert Dashboard::apply(const HostSnapshot &snap, int64_t now) {
     int idx = -1;
     for (int i = 0; i < count_; i++)
@@ -2328,7 +2441,10 @@ Alert Dashboard::apply(const HostSnapshot &snap, int64_t now) {
     Alert alert = Alert::None;
     if (idx >= 0) {
         const HostSnapshot &prev = hosts_[idx].snap;
-        for (int i = 0; i < snap.count; i++) {
+        // Snapshot precedent deja perime : ses etats n'etaient plus fiables,
+        // pas de salve de bips au retour du serveur.
+        bool prevStale = snapshotAge(prev, hosts_[idx].receivedAt, now) > STALE_AFTER_S;
+        for (int i = 0; i < snap.count && !prevStale; i++) {
             const Session &cur = snap.sessions[i];
             const Session *old = findSession(prev, cur.id);
             if (!old || old->state == cur.state) continue;
@@ -2349,14 +2465,16 @@ int Dashboard::rows(Row *out, int max) const {
     for (int h = 0; h < count_; h++)
         for (int i = 0; i < hosts_[h].snap.count && n < max; i++)
             out[n++] = {&hosts_[h].snap.sessions[i], hosts_[h].snap.host};
-    // tri par insertion (n <= 48)
+
+    // Ordre strict : a egalite, l'ordre d'origine est conserve (tri stable).
+    auto before = [](const Row &a, const Row &b) {
+        int ua = urgency(a.session->state), ub = urgency(b.session->state);
+        return ua != ub ? ua < ub : a.session->since < b.session->since;
+    };
+    // Tri par insertion (n <= MAX_ROWS = 48)
     for (int i = 1; i < n; i++) {
         Row r = out[i];
         int j = i - 1;
-        auto before = [&](const Row &a, const Row &b) {
-            int ua = urgency(a.session->state), ub = urgency(b.session->state);
-            return ua != ub ? ua < ub : a.session->since < b.session->since;
-        };
         while (j >= 0 && before(r, out[j])) {
             out[j + 1] = out[j];
             j--;
@@ -2379,7 +2497,7 @@ const Limits *Dashboard::limits() const {
 int64_t Dashboard::staleSeconds(int64_t now) const {
     int64_t worst = 0;
     for (int i = 0; i < count_; i++) {
-        int64_t age = now - hosts_[i].receivedAt;
+        int64_t age = snapshotAge(hosts_[i].snap, hosts_[i].receivedAt, now);
         if (age > worst) worst = age;
     }
     return worst;
