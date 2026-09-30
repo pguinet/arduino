@@ -244,6 +244,74 @@ mutuellement en boucle. Pour observer les messages, crée un troisième device
 `debug` (publish : reject `#` ; subscribe : accept `claude-dash/#`) ou éteins
 l'écran le temps du test.
 
+## Déploiement sur un serveur distant
+
+Pas à pas pour un serveur supplémentaire (Scaleway IoT Hub, plan Shared). Chaque
+serveur a **son propre device** Scaleway : deux agents avec le même Device ID
+s'éjectent mutuellement en boucle.
+
+1. **Console Scaleway** : crée un device dédié (ex. `serveur-<nom>`), télécharge
+   son certificat et sa clé, note son Device ID. Filtres : Publish accept
+   `claude-dash/<hostname>/#` (le nom choisi à l'étape 4), Subscribe reject `#`.
+2. **Code** sur le serveur (clone, ou copie du seul dossier `server/`) :
+   ```bash
+   git clone <url du dépôt> ~/arduino
+   cd ~/arduino/sketches/JC3248W535C/Claude_Dashboard/server
+   # ou, depuis ta machine : scp -r server/ <serveur>:claude-dash-server/
+   ./install.sh
+   ```
+   Le service est installé mais pas démarré tant que la config n'est pas
+   renseignée.
+3. **Certificats** (depuis ta machine) :
+   ```bash
+   scp iot-hub-ca.pem serveur-<nom>.crt serveur-<nom>.key <serveur>:.config/claude-dash/
+   ssh <serveur> 'chmod 700 ~/.config/claude-dash && chmod 600 ~/.config/claude-dash/*'
+   ```
+   Clé non chiffrée (voir « Scaleway IoT Hub », étape 3).
+4. **Config** `~/.config/claude-dash/config.toml` (chmod 600, créé par
+   `install.sh`) : remplace les sections par l'exemple Scaleway de fin de
+   `config.toml.example`, avec **le Device ID de ce serveur** et un
+   **`[agent] hostname` unique** (celui du filtre Publish, affiché sur l'écran) :
+   ```toml
+   [mqtt]
+   host = "iot.fr-par.scw.cloud"
+   port = 8883
+   tls = true
+   ca_certs = "~/.config/claude-dash/iot-hub-ca.pem"
+   certfile = "~/.config/claude-dash/serveur-<nom>.crt"
+   keyfile = "~/.config/claude-dash/serveur-<nom>.key"
+   client_id = "<Device ID de ce serveur>"
+   retain = false
+   topic_prefix = "claude-dash"
+
+   [agent]
+   hostname = "<nom>"
+   heartbeat = 20
+   ```
+5. **Statusline** : ajoute l'appel au collecteur (au premier plan, `timeout 1`,
+   voir « Statusline ») :
+   ```bash
+   printf '%s' "$input" | timeout 1 ~/.local/bin/claude-dash-statusline >/dev/null 2>&1
+   ```
+6. **Démarrage** :
+   ```bash
+   systemctl --user restart claude-dash-agent
+   loginctl enable-linger "$USER"      # l'agent survit à la déconnexion SSH
+   timedatectl | grep synchronized     # doit dire "yes" (sinon l'écran juge les snapshots périmés)
+   ```
+7. **Vérification** :
+   ```bash
+   journalctl --user -u claude-dash-agent -f   # "agent démarré ..." puis "MQTT connecté"
+   ```
+   Sous 20 s, l'écran reçoit le serveur (cartes en `projet@<nom>` dès que deux
+   serveurs publient). Relance les sessions Claude Code déjà ouvertes (hooks), puis
+   vérifie : session qui apparaît, `TRAVAILLE` pendant une réponse, `PERMISSION`
+   et deux bips sur une commande à approuver, `ATTENTE` et un bip à la fin du tour,
+   disparition à `/exit` ; un `kill -9` du processus `claude` la retire sous ~2 s.
+8. **Désinstallation** : `./install.sh --uninstall` (voir « Désinstallation »),
+   puis supprime `~/.config/claude-dash/`, la ligne de la statusline, et le device
+   dans la console Scaleway.
+
 ## Dépannage
 
 ```bash

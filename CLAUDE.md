@@ -358,6 +358,16 @@ grep CONFIG_MBEDTLS_SSL_PROTO_TLS1_3 ~/.platformio/packages/framework-arduinoesp
 Un `pio pkg update` réécrase ces libs. Procédure de reconstruction et de
 réinstallation : [`sketches/common/PRIM_TLS13_libs.md`](sketches/common/PRIM_TLS13_libs.md).
 
+### ⚠️ Watchdog : le TWDT est déjà initialisé à 5 s par le framework
+
+pioarduino démarre le Task WDT à 5 s (`CONFIG_ESP_TASK_WDT_INIT=y`) : un
+`esp_task_wdt_init()` seul renvoie `ESP_ERR_INVALID_STATE` et **laisse 5 s**
+(panic sur toute opération bloquante plus longue, ex. connexion TLS). Utiliser
+`esp_task_wdt_reconfigure()` (repli sur `esp_task_wdt_init()` si
+`ESP_ERR_INVALID_STATE`), puis `esp_task_wdt_add(NULL)`. Corrigé dans
+`Claude_Dashboard` et `Transit_Tracker` ; `Train_Tracker`/`Bus_Tracker` (dépréciés)
+ont encore l'ancien code.
+
 **Sketches disponibles** :
 - `TouchTest/` - Test du tactile avec affichage des coordonnées en temps réel
 - `System_Monitor/` - Dashboard système avec jauges RAM, PSRAM, uptime
@@ -366,6 +376,7 @@ réinstallation : [`sketches/common/PRIM_TLS13_libs.md`](sketches/common/PRIM_TL
 - `Train_Tracker/` - ⚠️ **DÉPRÉCIÉ** → utiliser `Transit_Tracker/` (qui fait bus + train). Prochains départs d'une gare Transilien/RER (ligne, mission, voie, retard) via API PRIM. Gare en dur (STATION_ID dans `main.cpp`, format StopArea PRIM)
 - `Transit_Tracker/` - **(recommandé)** Fusion Bus + Train + Météo avec onglets (Foch, Eglise, Ecouen, Meteo). Remplace `Bus_Tracker` et `Train_Tracker`. Type `TYPE_BUS`/`TYPE_TRAIN` dans `stops[]` détermine le MonitoringRef (StopPoint:Q vs StopArea:SP) et les champs parsés (mission/voie/retard pour trains). Météo via Open-Meteo (aucune clé API) : bandeau température permanent dans l'en-tête + onglet dédié (conditions, vent, pluie, min/max, 4 créneaux à +1h/+4h/+7h/+10h). Coordonnées dans `WEATHER_LAT`/`WEATHER_LON` (`main.cpp`), rafraîchissement 15 min. L'onglet de repli dépend de l'heure : départs aux heures de pointe (6h30–9h et 17h–20h, `isRushHour()`), météo le reste du temps. L'écran y revient 2 min après une sélection tactile, et bascule seul à l'entrée/sortie des heures de pointe. Les pictogrammes météo sont dessinés en primitives LVGL (pas de fonte d'icônes météo) et les libellés sont sans accents (Montserrat intégrée = ASCII + `°` uniquement)
 - `SD_Browser/` - Explorateur de carte SD avec infos techniques
+- `Claude_Dashboard/` - Tableau de bord Claude Code : quotas 5h/7j et sessions (projet, modèle, état travaille/attente/permission, outil, contexte) d'un ou plusieurs serveurs distants, reçues via Scaleway IoT Hub (plan Shared, MQTT mTLS, sans retain, heartbeat 20 s). `DASH_MQTT_*` (hôte, Device ID, CA/certificat/clé PEM) dans `credentials.h`, conversion des PEM par `tools/pem2credentials.sh`. Bips NS4168 sur attente/permission, écran allumé tant qu'une session est listée (sinon veille après 10 min). Agent serveur Python dans `server/` (hooks + statusline + service systemd --user, installé par `install.sh`). Voir son `README.md`
 
 ## ESP32-4848S040
 

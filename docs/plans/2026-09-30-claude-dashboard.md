@@ -3233,30 +3233,29 @@ git commit -m "Claude_Dashboard: ecran allume tant qu'une session est listee"
 ### Task 15: Qualité firmware, déploiement réel et documentation
 
 **Files:**
-- Modify: `CLAUDE.md` (section JC3248W535C, liste des sketches)
-- Modify: `libraries.txt` (PubSubClient déjà présent : ajouter un commentaire « aussi Claude_Dashboard » ; rien à installer côté arduino-cli, les libs sont gérées par PlatformIO)
-- Create: `$FW/README.md`
+- Modify: `CLAUDE.md` (section JC3248W535C : liste des sketches + gotcha watchdog)
+- Modify: `libraries.txt` (PubSubClient déjà présent : commentaire « aussi Claude_Dashboard, via lib_deps PlatformIO » ; rien à installer côté arduino-cli)
+- Modify: `$SRV/README.md` (section « Déploiement sur un serveur distant »)
+- Create: `$FW/README.md`, `$FW/tools/pem2credentials.sh`
 
-**Step 1: Analyse statique**
+**Step 1: Portes de qualité** (toutes vertes au moment du commit)
+- `$PIO test -e native` → 55 tests PASS ;
+- `$PIO run -e esp32s3` → SUCCESS (Flash 42 %) ;
+- `$PIO check -e esp32s3 --skip-packages` → aucun défaut dans `src/main.cpp`, `src/ui.cpp`, `src/beep.cpp`, `lib/dash_model` (ceux signalés sont dans LVGL, ArduinoJson, PubSubClient et `include/`, code tiers) ;
+- `$SRV/run-checks.sh` → ruff, mypy OK, 174 tests PASS ; `$SRV/dev/integration-test.sh`, `$SRV/dev/integration-test-mtls.sh`, `$SRV/dev/test-install.sh` → PASS ;
+- shellcheck (`docker run --rm -v "$PWD":/mnt -w /mnt koalaman/shellcheck:stable tools/*.sh server/*.sh server/dev/*.sh` depuis `$FW`) → aucun avertissement.
 
-Run: `cd $FW && $PIO check -e esp32s3 --skip-packages`
-Expected : aucun défaut `high`/`medium` dans `src/main.cpp`, `src/ui.cpp`, `src/beep.cpp`, `lib/dash_model`. Corriger ou justifier (`// cppcheck-suppress`).
+**Step 2: Déploiement.** Installation locale (cette machine, Scaleway, `systemd --user`) faite et validée par l'utilisateur : cartes affichées, bips entendus. Le déploiement sur le serveur distant sera fait plus tard par l'utilisateur : `$SRV/README.md` gagne une section « Déploiement sur un serveur distant » pas à pas — device Scaleway dédié par serveur (filtres Publish `claude-dash/<hostname>/#`), clone/copie + `./install.sh`, certificats dans `~/.config/claude-dash/` (chmod 600), `config.toml` avec le Device ID de ce serveur et un `[agent] hostname` unique, ligne statusline (premier plan, `timeout 1`), `loginctl enable-linger`, contrôle NTP (`timedatectl`), vérification (`journalctl`, scénario working/permission/idle/exit/kill -9 sur l'écran), désinstallation.
 
-Run: `$PIO test -e native` → tout PASS. `$SRV/run-checks.sh` → tout PASS.
+**Step 3: `CLAUDE.md`** — puce `Claude_Dashboard/` dans « Sketches disponibles » de JC3248W535C (Scaleway IoT Hub mTLS, `DASH_MQTT_*` dans `credentials.h`, `tools/pem2credentials.sh`, bips, politique d'écran, agent `server/` + `install.sh`), et gotcha « ⚠️ Watchdog : le TWDT est déjà initialisé à 5 s par le framework » (`esp_task_wdt_reconfigure`, corrigé dans Claude_Dashboard et Transit_Tracker, pas dans Train_Tracker/Bus_Tracker dépréciés).
 
-**Step 2: Déploiement sur le serveur distant** (fait par l'utilisateur, guidé) : copier `server/` (`scp -r` ou `git clone`), `./install.sh`, renseigner `config.toml`, ajouter la ligne à la statusline, `loginctl enable-linger`. Lancer une session Claude Code sur le serveur et vérifier sur l'écran : apparition de la session, passage `working` pendant une réponse, `permission` sur une commande à approuver (bip), `idle` à la fin du tour, disparition à `/exit`. Tuer une session avec `kill -9` → disparition sous ~2 s.
+**Step 4: `$FW/README.md`** — rôle et schéma (hooks/statusline → agent → Scaleway IoT Hub → JC3248), contenu de l'écran (quotas, cartes, couleurs, états, bandeau, bips, veille), prérequis Scaleway (devices `serveur` par serveur, `ecran`, `debug` facultatif ; filtres ; CA/certificat/clé ; Device ID), `credentials.h` (macros, lien symbolique absolu, conversion des PEM), build/upload/monitor (tty requis, capture par `script`), tests, dépannage (rc MQTT, erreurs TLS, PEM invalides au démarrage, Device ID dupliqué, horloge du serveur décalée → aucun bip / bandeau permanent, tas interne), liens vers `server/README.md`.
 
-**Step 3: `CLAUDE.md`** — ajouter dans « Sketches disponibles » de JC3248W535C :
-
-```
-- `Claude_Dashboard/` - Tableau de bord Claude Code : quotas 5h/7j, sessions (projet, modele, etat travaille/attente/permission, outil, contexte) d'un serveur distant via MQTT/TLS (broker cloud dedie, `DASH_MQTT_*` dans `credentials.h`). Bip NS4168 + reveil ecran quand une session attend. Agent serveur Python dans `server/` (hooks + statusline + service systemd --user, voir son README)
-```
-
-**Step 4: `$FW/README.md`** — schéma d'architecture, prérequis broker (TLS, 2 comptes, ACL), renseignement de `credentials.h`, build/upload, tests (`pio test -e native`, `server/run-checks.sh`), dépannage (rc MQTT, NTP, TLS 1.3 ; « aucun bip / bandeau de perte de liaison permanent → vérifier NTP sur le serveur », l'âge des snapshots étant calculé depuis leur `ts`).
+`tools/pem2credentials.sh <ca.pem> <cert.crt> <cle.key> [sortie.h]` : version générique, versionnée, du script local de l'utilisateur. Retire CRLF et lignes vides (sur des copies privées), vérifie avec `openssl` (PEM valides, clé non chiffrée, clé ↔ certificat), écrit le bloc des trois `#define` sur stdout ou dans un fichier en chmod 600. Testé avec des certificats jetables (CRLF, clé chiffrée, clé ne correspondant pas, bloc compilé par gcc).
 
 **Step 5: Commit**
 
 ```bash
-git add CLAUDE.md libraries.txt $FW
+git add CLAUDE.md libraries.txt $FW docs/plans/2026-09-30-claude-dashboard.md
 git commit -m "Claude_Dashboard: documentation et verification qualite"
 ```

@@ -25,6 +25,8 @@ ArduinoGraphics
 LovyanGFX
 
 # MQTT
+# (JC3248W535C/Claude_Dashboard l'utilise aussi, via les lib_deps PlatformIO :
+#  rien a installer avec arduino-cli pour ce sketch)
 PubSubClient
 
 # Ping ESP32 (NON PRESENT DANS L'INDEX OFFICIEL — installer via git)
