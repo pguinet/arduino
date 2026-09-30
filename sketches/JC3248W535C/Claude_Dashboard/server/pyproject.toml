@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-dash"
+version = "0.1.0"
+description = "Agent serveur du tableau de bord Claude Code (JC3248W535C)"
+requires-python = ">=3.11"
+dependencies = ["paho-mqtt>=2.0,<3"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
+
+[project.scripts]
+claude-dash-hook = "claude_dash.hook:main"
+claude-dash-statusline = "claude_dash.statusline:main"
+claude-dash-agent = "claude_dash.agent:main"
+
+[tool.setuptools]
+packages = ["claude_dash"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+
+[[tool.mypy.overrides]]
+module = "paho.*"
+ignore_missing_imports = true
