@@ -22,6 +22,7 @@ struct Limits {
     int64_t h5Reset = 0;
     int d7 = -1;
     int64_t d7Reset = 0;
+    int64_t updated = 0;  // date de lecture des quotas par l'agent, 0 si inconnue (agent ancien)
 };
 
 struct Session {
@@ -74,8 +75,12 @@ public:
     // Les pointeurs des Row ne sont valides que jusqu'au prochain apply(),
     // removeHost() ou expire() : ne pas les conserver.
     int rows(Row *out, int max) const;
-    // Quotas du snapshot le plus recent.
-    const Limits *limits() const;
+    // Quotas affiches, fenetre par fenetre (5h et 7j independamment) : ceux de
+    // l'hote aux quotas les plus frais (limits.updated, sinon ts du snapshot),
+    // en ignorant une fenetre dont le reset est passe (valeur perimee). Sans
+    // candidat, la fenetre vaut -1 (reset 0) ; updated reste a 0. Un autre hote dont la statusline
+    // n'a pas tourne depuis des heures ne masque donc pas les valeurs a jour.
+    Limits limits(int64_t now) const;
     int hostCount() const { return count_; }
     const char *hostName(int i) const { return hosts_[i].snap.host; }
     // Age maximal parmi les hotes (0 si aucun) : now - snap.ts, ou now - reception

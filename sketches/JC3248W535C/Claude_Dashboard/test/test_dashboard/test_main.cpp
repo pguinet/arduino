@@ -152,14 +152,18 @@ void test_multi_host_and_latest_limits() {
     d.apply(h1, 100);
     d.apply(h2, 200);
     TEST_ASSERT_EQUAL(2, d.hostCount());
-    TEST_ASSERT_EQUAL(20, d.limits()->h5);
+    TEST_ASSERT_EQUAL(20, d.limits(200).h5);
     Row rows[MAX_ROWS];
     TEST_ASSERT_EQUAL(2, d.rows(rows, MAX_ROWS));
 }
 
 void test_limits_null_when_never_received() {
     Dashboard d;
-    TEST_ASSERT_NULL(d.limits());
+    Limits l = d.limits(100);
+    TEST_ASSERT_EQUAL(-1, l.h5);
+    TEST_ASSERT_EQUAL(-1, l.d7);
+    TEST_ASSERT_EQUAL(0, (long)l.h5Reset);
+    TEST_ASSERT_EQUAL(0, (long)l.d7Reset);
 }
 
 void test_stale_seconds() {
@@ -272,8 +276,106 @@ void test_limits_skip_host_without_limits() {
     strcpy(n.host, "new");
     n.ts = 200;  // plus recent, mais sans quotas
     d.apply(n, 200);
-    TEST_ASSERT_NOT_NULL(d.limits());
-    TEST_ASSERT_EQUAL(30, d.limits()->d7);
+    TEST_ASSERT_EQUAL(30, d.limits(200).d7);
+}
+
+// Cas reel : l'hote "bureau" republie a chaque heartbeat des quotas lus des
+// heures plus tot ; ils ne doivent pas alterner avec ceux, a jour, de "pc".
+void test_limits_freshest_wins_not_latest_heartbeat() {
+    Dashboard d;
+    HostSnapshot pc, bureau;
+    strcpy(pc.host, "pc");
+    pc.ts = 1000;
+    pc.limits = {2, 9000, 0, 90000, 990};
+    strcpy(bureau.host, "bureau");
+    bureau.ts = 1010;  // heartbeat plus recent...
+    bureau.limits = {23, 8000, 55, 80000, 100};  // ...mais quotas lus bien avant
+    d.apply(pc, 1000);
+    d.apply(bureau, 1010);  // nouvel hote : redessin normal
+    Limits l = d.limits(1010);
+    TEST_ASSERT_EQUAL(2, l.h5);
+    TEST_ASSERT_EQUAL(9000, (long)l.h5Reset);
+    TEST_ASSERT_EQUAL(0, l.d7);
+    TEST_ASSERT_EQUAL(90000, (long)l.d7Reset);
+    // heartbeats suivants dans les deux ordres : toujours "pc", sans redessin
+    bool changed = true;
+    pc.ts = 1020;
+    d.apply(pc, 1020, &changed);
+    TEST_ASSERT_FALSE(changed);
+    changed = true;
+    bureau.ts = 1030;
+    d.apply(bureau, 1030, &changed);
+    TEST_ASSERT_FALSE(changed);
+    TEST_ASSERT_EQUAL(2, d.limits(1030).h5);
+}
+
+void test_limits_skip_expired_window() {
+    Dashboard d;
+    HostSnapshot a, b;
+    strcpy(a.host, "a");
+    a.ts = 1000;
+    a.limits = {23, 500, 55, 800, 990};  // les deux resets sont passes (now = 1000)
+    strcpy(b.host, "b");
+    b.ts = 1000;
+    b.limits = {40, 5000, 60, 50000, 100};  // moins frais mais encore valide
+    d.apply(a, 1000);
+    d.apply(b, 1000);
+    Limits l = d.limits(1000);
+    TEST_ASSERT_EQUAL(40, l.h5);
+    TEST_ASSERT_EQUAL(60, l.d7);
+}
+
+void test_limits_expired_without_candidate_is_unknown() {
+    Dashboard d;
+    HostSnapshot a;
+    strcpy(a.host, "a");
+    a.ts = 1000;
+    a.limits = {23, 1500, 55, 80000, 990};
+    d.apply(a, 1000);
+    TEST_ASSERT_EQUAL(23, d.limits(1499).h5);
+    Limits l = d.limits(1500);  // reset atteint
+    TEST_ASSERT_EQUAL(-1, l.h5);
+    TEST_ASSERT_EQUAL(0, (long)l.h5Reset);
+    TEST_ASSERT_EQUAL(55, l.d7);  // fenetre 7j independante
+    // reset inconnu (0) : jamais considere comme passe
+    a.limits = {23, 0, -1, 0, 990};
+    d.apply(a, 2000);
+    TEST_ASSERT_EQUAL(23, d.limits(99999).h5);
+}
+
+void test_limits_windows_chosen_independently() {
+    Dashboard d;
+    HostSnapshot a, b;
+    strcpy(a.host, "a");
+    a.ts = 1000;
+    a.limits = {10, 5000, -1, 0, 900};  // 5h seulement, le plus frais
+    strcpy(b.host, "b");
+    b.ts = 1000;
+    b.limits = {20, 5000, 30, 50000, 100};
+    d.apply(a, 1000);
+    d.apply(b, 1000);
+    Limits l = d.limits(1000);
+    TEST_ASSERT_EQUAL(10, l.h5);
+    TEST_ASSERT_EQUAL(30, l.d7);
+    TEST_ASSERT_EQUAL(50000, (long)l.d7Reset);
+}
+
+void test_limits_updated_preferred_over_ts_of_old_agent() {
+    // Agent ancien (sans updated) : sa fraicheur est son ts
+    Dashboard d;
+    HostSnapshot oldAgent, newAgent;
+    strcpy(oldAgent.host, "old");
+    oldAgent.ts = 1000;
+    oldAgent.limits.h5 = 50;
+    strcpy(newAgent.host, "new");
+    newAgent.ts = 1010;
+    newAgent.limits = {5, 0, -1, 0, 990};
+    d.apply(oldAgent, 1000);
+    d.apply(newAgent, 1010);
+    TEST_ASSERT_EQUAL(50, d.limits(1010).h5);  // ts 1000 > updated 990
+    newAgent.limits.updated = 1005;
+    d.apply(newAgent, 1020);
+    TEST_ASSERT_EQUAL(5, d.limits(1020).h5);
 }
 
 // Remplit le tableau de bord avec MAX_HOSTS hotes "h0".."h3" de ts donnes.
@@ -429,7 +531,7 @@ void test_changed_on_limits() {
 }
 
 void test_changed_when_displayed_limits_switch_host() {
-    // quotas affiches = ceux du snapshot le plus recent : un heartbeat de l'autre hote
+    // agents sans limits.updated : fraicheur = ts, un heartbeat de l'autre hote
     // peut changer l'affichage sans que ses propres quotas aient change
     Dashboard d;
     HostSnapshot a = one("a", State::Working, 100), b = one("b", State::Working, 200);
@@ -437,11 +539,11 @@ void test_changed_when_displayed_limits_switch_host() {
     b.limits.h5 = 20;
     d.apply(a, 100);
     d.apply(b, 200);
-    TEST_ASSERT_EQUAL(20, d.limits()->h5);
+    TEST_ASSERT_EQUAL(20, d.limits(200).h5);
     a.ts = 300;
     bool changed = false;
     d.apply(a, 300, &changed);
-    TEST_ASSERT_EQUAL(10, d.limits()->h5);
+    TEST_ASSERT_EQUAL(10, d.limits(300).h5);
     TEST_ASSERT_TRUE(changed);
 }
 
@@ -567,6 +669,11 @@ int main() {
     RUN_TEST(test_alert_idle_after_permission);
     RUN_TEST(test_session_gone_then_back_no_alert);
     RUN_TEST(test_limits_skip_host_without_limits);
+    RUN_TEST(test_limits_freshest_wins_not_latest_heartbeat);
+    RUN_TEST(test_limits_skip_expired_window);
+    RUN_TEST(test_limits_expired_without_candidate_is_unknown);
+    RUN_TEST(test_limits_windows_chosen_independently);
+    RUN_TEST(test_limits_updated_preferred_over_ts_of_old_agent);
     RUN_TEST(test_extra_host_ignored_when_none_evictable);
     RUN_TEST(test_extra_host_evicts_oldest_dead_host);
     RUN_TEST(test_remove_host_compacts);

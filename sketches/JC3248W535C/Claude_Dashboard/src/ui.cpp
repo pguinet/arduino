@@ -217,9 +217,9 @@ static void addCard(const Row &r, bool showHost) {
 }
 
 void ui_render(const Dashboard &d, time_t now, bool mqttOk) {
-    const Limits *lim = d.limits();
-    renderLimit(bar5h, pct5h, reset5h, lim ? lim->h5 : -1, lim ? lim->h5Reset : 0, false);
-    renderLimit(bar7d, pct7d, reset7d, lim ? lim->d7 : -1, lim ? lim->d7Reset : 0, true);
+    Limits lim = d.limits(now);
+    renderLimit(bar5h, pct5h, reset5h, lim.h5, lim.h5Reset, false);
+    renderLimit(bar7d, pct7d, reset7d, lim.d7, lim.d7Reset, true);
 
     lv_label_set_text(lblHost, d.hostCount() == 1 ? d.hostName(0) : "");
 

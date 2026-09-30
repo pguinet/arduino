@@ -53,6 +53,7 @@ bool parseSnapshot(const char *json, size_t len, HostSnapshot &out) {
         out.limits.h5Reset = parseEpoch(lim["h5_reset"]);
         out.limits.d7 = parsePercent(lim["d7"]);
         out.limits.d7Reset = parseEpoch(lim["d7_reset"]);
+        out.limits.updated = parseEpoch(lim["updated"]);
     }
 
     for (JsonVariantConst v : doc["sessions"].as<JsonArrayConst>()) {
@@ -98,12 +99,8 @@ static int64_t snapshotAge(const HostSnapshot &snap, int64_t receivedAt, int64_t
 }
 
 static bool sameLimits(const Limits &a, const Limits &b) {
+    // updated ignore : il ne sert qu'a choisir l'hote, pas a l'affichage
     return a.h5 == b.h5 && a.h5Reset == b.h5Reset && a.d7 == b.d7 && a.d7Reset == b.d7Reset;
-}
-
-static bool sameLimits(const Limits *a, const Limits *b) {
-    if (!a || !b) return a == b;
-    return sameLimits(*a, *b);
 }
 
 static bool sameSession(const Session &a, const Session &b) {
@@ -160,14 +157,12 @@ Alert Dashboard::apply(const HostSnapshot &snap, int64_t now, bool *changed) {
     }
 
     bool diff = isNew || !sameContent(hosts_[idx].snap, snap);
-    Limits shownBefore;
-    const Limits *lb = limits();
-    if (lb) shownBefore = *lb;
+    Limits shownBefore = limits(now);
 
     hosts_[idx].snap = snap;
     hosts_[idx].receivedAt = now;
 
-    if (changed) *changed = diff || !sameLimits(lb ? &shownBefore : nullptr, limits());
+    if (changed) *changed = diff || !sameLimits(shownBefore, limits(now));
     return alert;
 }
 
@@ -218,14 +213,33 @@ int Dashboard::rows(Row *out, int max) const {
     return n;
 }
 
-const Limits *Dashboard::limits() const {
-    const HostSnapshot *best = nullptr;
+static int64_t limitsFreshness(const HostSnapshot &s) {
+    return s.limits.updated > 0 ? s.limits.updated : s.ts;
+}
+
+// Fenetre utilisable : valeur connue et reset inconnu (0) ou encore a venir.
+static bool windowValid(int pct, int64_t resetAt, int64_t now) {
+    return pct >= 0 && (resetAt <= 0 || resetAt > now);
+}
+
+Limits Dashboard::limits(int64_t now) const {
+    Limits out;
+    int64_t best5 = -1, best7 = -1;
     for (int i = 0; i < count_; i++) {
         const HostSnapshot &s = hosts_[i].snap;
-        if (s.limits.h5 < 0 && s.limits.d7 < 0) continue;
-        if (!best || s.ts > best->ts) best = &s;
+        int64_t fresh = limitsFreshness(s);
+        if (windowValid(s.limits.h5, s.limits.h5Reset, now) && fresh > best5) {
+            best5 = fresh;
+            out.h5 = s.limits.h5;
+            out.h5Reset = s.limits.h5Reset;
+        }
+        if (windowValid(s.limits.d7, s.limits.d7Reset, now) && fresh > best7) {
+            best7 = fresh;
+            out.d7 = s.limits.d7;
+            out.d7Reset = s.limits.d7Reset;
+        }
     }
-    return best ? &best->limits : nullptr;
+    return out;
 }
 
 int64_t Dashboard::staleSeconds(int64_t now) const {

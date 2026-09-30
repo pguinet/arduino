@@ -10,7 +10,7 @@ from typing import Any, TypeGuard
 STATES = ("working", "idle", "permission")
 MAX_SESSIONS = 12
 NO_PID_TTL = 12 * 3600
-LIMIT_KEYS = ("h5", "h5_reset", "d7", "d7_reset")
+LIMIT_KEYS = ("h5", "h5_reset", "d7", "d7_reset", "updated")
 PCT_KEYS = ("h5", "d7")
 PID_MAX = 4_194_304  # borne haute de /proc/sys/kernel/pid_max sous Linux 64 bits
 HOST_MAX = 32
@@ -18,7 +18,7 @@ ID_MAX = 8
 # Borne des epochs publiés : le firmware les stocke en int64, la borne uint32
 # garde juste un payload compact et des valeurs saines.
 TIME_MAX = 2**32
-TIME_KEYS = ("h5_reset", "d7_reset")
+TIME_KEYS = ("h5_reset", "d7_reset", "updated")
 
 
 def _as_int(value: Any) -> int:
@@ -84,8 +84,14 @@ def _public(sess: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _public_limits(limits: Any) -> dict[str, int]:
-    """Entiers uniquement ; pourcentages bornés à 0..100."""
+def _public_limits(limits: Any, now: int) -> dict[str, int]:
+    """Entiers uniquement ; pourcentages bornés à 0..100.
+
+    Une fenêtre dont le reset est passé est omise : sa valeur date de la
+    fenêtre précédente (statusline muette depuis). `updated` (date de lecture)
+    n'est publié qu'avec au moins une fenêtre : l'écran s'en sert pour préférer
+    l'hôte aux quotas les plus frais.
+    """
     if not isinstance(limits, dict):
         return {}
     out: dict[str, int] = {}
@@ -93,6 +99,12 @@ def _public_limits(limits: Any) -> dict[str, int]:
         value = limits.get(key)
         if isinstance(value, int) and not isinstance(value, bool):
             out[key] = _clamp_pct(value) if key in PCT_KEYS else _as_time(value)
+    for key in PCT_KEYS:
+        if 0 < out.get(f"{key}_reset", 0) <= now:
+            out.pop(key, None)
+            out.pop(f"{key}_reset")
+    if not any(k in out for k in PCT_KEYS):
+        return {}
     return out
 
 
@@ -113,7 +125,7 @@ def build_snapshot(
     alive.sort(key=lambda x: _as_int(x.get("updated")), reverse=True)
 
     snap: dict[str, Any] = {"host": _text(host, HOST_MAX, "?"), "ts": now}
-    pub_limits = _public_limits(limits)
+    pub_limits = _public_limits(limits, now)
     if pub_limits:
         snap["limits"] = pub_limits
     snap["sessions"] = [_public(x) for x in alive[:MAX_SESSIONS]]

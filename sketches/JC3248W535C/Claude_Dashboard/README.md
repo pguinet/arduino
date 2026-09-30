@@ -60,9 +60,13 @@ Serveur Linux (un ou plusieurs)                  Scaleway IoT Hub        Maison
 
 - **En-tête** : nom du serveur (s'il n'y en a qu'un), pastille MQTT (verte =
   connecté, rouge = déconnecté), heure locale (Europe/Paris).
-- **Quotas 5h / 7j** : pourcentage utilisé et heure de remise à zéro, pris dans
-  le snapshot le plus récent qui en contient (fournis par la statusline).
-  « -- » tant qu'inconnus.
+- **Quotas 5h / 7j** : pourcentage utilisé et heure de remise à zéro, fournis
+  par la statusline. Avec plusieurs serveurs, chaque fenêtre vient de celui dont
+  les quotas sont **les plus frais** (`limits.updated`, date de lecture par
+  l'agent), pas du dernier heartbeat : un serveur dont la statusline n'a pas
+  tourné depuis des heures ne fait plus alterner l'affichage. Une fenêtre dont
+  le reset est passé est ignorée, côté agent comme côté écran. « -- » tant
+  qu'inconnus.
 - **Cartes** (une par session), triées par urgence : `PERMISSION` > `ATTENTE` >
   `TRAVAILLE`, puis de la plus ancienne à la plus récente. Chaque carte : projet
   (`projet@hôte` si plusieurs serveurs), modèle, état, outil en cours, durée dans
