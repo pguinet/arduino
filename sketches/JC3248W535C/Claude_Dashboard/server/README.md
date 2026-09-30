@@ -192,7 +192,7 @@ pas de mot de passe, et le client id MQTT **doit** être le Device ID (UUID).
 3. Sur le serveur, range les fichiers du device `serveur` :
    ```bash
    mkdir -p ~/.config/claude-dash && chmod 700 ~/.config/claude-dash
-   mv hub-ca.pem serveur.crt serveur.key ~/.config/claude-dash/
+   mv iot-hub-ca.pem serveur.crt serveur.key ~/.config/claude-dash/
    chmod 600 ~/.config/claude-dash/serveur.key
    ```
    La clé privée doit être **non chiffrée** (`-----BEGIN PRIVATE KEY-----`, sans
@@ -220,7 +220,7 @@ pas de mot de passe, et le client id MQTT **doit** être le Device ID (UUID).
    host = "iot.fr-par.scw.cloud"          # voir la console
    port = 8883
    tls = true
-   ca_certs = "~/.config/claude-dash/hub-ca.pem"
+   ca_certs = "~/.config/claude-dash/iot-hub-ca.pem"
    certfile = "~/.config/claude-dash/serveur.crt"
    keyfile = "~/.config/claude-dash/serveur.key"
    client_id = "<Device ID>"
@@ -327,7 +327,7 @@ ls ~/.claude/dashboard/sessions/        # état brut des sessions
 - `MQTT refusé (Not authorized)` : identifiants ou ACL du broker.
 - Scaleway : utilise le device `debug` (jamais le Device ID de l'écran ou du
   serveur, déjà connectés : les deux clients s'éjecteraient en boucle) avec
-  `--cafile hub-ca.pem --cert debug.crt --key debug.key -i <Device ID debug>` au lieu
+  `--cafile iot-hub-ca.pem --cert debug.crt --key debug.key -i <Device ID debug>` au lieu
   de `-u`/`-P` ; sans retained, `mosquitto_sub` attend le prochain heartbeat.
 - `keyfile ... doit être en chmod 600` : `chmod 600 ~/.config/claude-dash/*.key` ;
   `keyfile ... est chiffrée` : voir l'étape 3 de la section Scaleway.
