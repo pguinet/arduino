@@ -1129,6 +1129,8 @@ def build_snapshot(
     return snap, [str(x["id"]) for x in dead]
 ```
 
+> **Écart implémenté :** lectures numériques défensives (`_as_int` : 0 si valeur non numérique ou bool) pour `since`/`updated`, `pid`/`ctx` bool ignorés, `alive`/`dead` annotés (mypy strict). Deux tests en plus : valeurs corrompues (pas de crash) et `updated` corrompu sans pid (session morte).
+
 **Step 4: Vérifier** — tout passe.
 
 **Step 5: Commit**
