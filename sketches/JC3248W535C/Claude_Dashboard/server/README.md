@@ -195,13 +195,24 @@ pas de mot de passe, et le client id MQTT **doit** être le Device ID (UUID).
    mv hub-ca.pem serveur.crt serveur.key ~/.config/claude-dash/
    chmod 600 ~/.config/claude-dash/serveur.key
    ```
+   La clé privée doit être **non chiffrée** (`-----BEGIN PRIVATE KEY-----`, sans
+   `ENCRYPTED`) : sinon l'agent refuse de démarrer (code 2). Pour la déchiffrer :
+   ```bash
+   cd ~/.config/claude-dash
+   openssl pkey -in serveur.key -out clair.key && mv clair.key serveur.key
+   chmod 600 serveur.key
+   ```
    Le certificat et la clé de l'`ecran` vont dans `credentials.h` du firmware.
-4. **Filtres de messages** (ils remplacent les ACL par compte) :
+4. **Filtres de messages** du device (ils remplacent les ACL par compte ; policy
+   *accept* ou *reject* + liste de topics dans la console) :
 
    | Device | Publish | Subscribe |
    |---|---|---|
-   | serveur | autoriser `claude-dash/#`, refuser le reste | tout refuser |
-   | ecran | tout refuser | autoriser `claude-dash/#`, refuser le reste |
+   | serveur | accept `claude-dash/<hostname>/#` | reject `#` |
+   | ecran | reject `#` | accept `claude-dash/#` |
+
+   Le filtre du serveur est restreint à **son** `<hostname>` : un certificat
+   serveur volé ne permet pas d'usurper un autre serveur.
 
 5. Config (bloc d'exemple en fin de `config.toml.example`) :
    ```toml
@@ -227,6 +238,12 @@ ne reçoit donc rien avant la prochaine publication : un heartbeat de 20 s borne
 cette attente. Le **nom d'hôte** reste utilisé dans le topic : il doit toujours
 être unique entre tes serveurs.
 
+**Un Device ID = un seul client connecté.** Deux clients avec le même client id
+(par exemple un `mosquitto_sub` de test avec l'identité de l'écran) se déconnectent
+mutuellement en boucle. Pour observer les messages, crée un troisième device
+`debug` (publish : reject `#` ; subscribe : accept `claude-dash/#`) ou éteins
+l'écran le temps du test.
+
 ## Dépannage
 
 ```bash
@@ -240,10 +257,15 @@ ls ~/.claude/dashboard/sessions/        # état brut des sessions
 
 - `config.toml doit être en chmod 600` : `chmod 600 ~/.config/claude-dash/config.toml`.
 - `MQTT refusé (Not authorized)` : identifiants ou ACL du broker.
-- Scaleway : sans message retained, `mosquitto_sub` attend le prochain heartbeat
-  (ajoute `--cafile hub-ca.pem --cert ecran.crt --key ecran.key -i <Device ID écran>`
-  au lieu de `-u`/`-P`). `keyfile ... doit être en chmod 600` :
-  `chmod 600 ~/.config/claude-dash/*.key`.
+- Scaleway : utilise le device `debug` (jamais le Device ID de l'écran ou du
+  serveur, déjà connectés : les deux clients s'éjecteraient en boucle) avec
+  `--cafile hub-ca.pem --cert debug.crt --key debug.key -i <Device ID debug>` au lieu
+  de `-u`/`-P` ; sans retained, `mosquitto_sub` attend le prochain heartbeat.
+- `keyfile ... doit être en chmod 600` : `chmod 600 ~/.config/claude-dash/*.key` ;
+  `keyfile ... est chiffrée` : voir l'étape 3 de la section Scaleway.
+- `connexion MQTT impossible à …` (WARNING, une fois par panne) : réseau, CA,
+  certificat client refusé ou client id déjà utilisé ; « connexion MQTT rétablie »
+  au retour.
 - Rien dans le journal après un redémarrage de session SSH : `loginctl enable-linger`.
 - Session fantôme sur l'écran : elle disparaît dès que le processus `claude` est
   mort (vérifié chaque seconde).

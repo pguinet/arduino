@@ -230,3 +230,17 @@ def test_heartbeat_accepted(tmp_path: Path, value: int) -> None:
 def test_heartbeat_rejected(tmp_path: Path, value: str) -> None:
     with pytest.raises(ConfigError, match="heartbeat"):
         load_config(write(tmp_path, f'[mqtt]\nhost="h"\n[agent]\nheartbeat={value}\n'))
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "-----BEGIN ENCRYPTED PRIVATE KEY-----",
+        "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED",
+    ],
+)
+def test_encrypted_keyfile_rejected(tmp_path: Path, header: str) -> None:
+    cert, key = cert_pair(tmp_path)
+    key.write_text(f"{header}\nabc\n")
+    with pytest.raises(ConfigError, match="chiffrée"):
+        load_config(write(tmp_path, f'[mqtt]\nhost="h"\ncertfile="{cert}"\nkeyfile="{key}"\n'))

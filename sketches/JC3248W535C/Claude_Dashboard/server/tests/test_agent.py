@@ -349,9 +349,13 @@ class FakeClient:
         return [(a, k) for n, a, k in self.calls if n == name]
 
 
+@pytest.fixture(autouse=True)
+def reset_fake_clients() -> None:
+    FakeClient.instances = []
+
+
 @pytest.fixture
 def fake_client(monkeypatch: pytest.MonkeyPatch) -> type[FakeClient]:
-    FakeClient.instances = []
     monkeypatch.setattr(agent.mqtt, "Client", FakeClient)
     return FakeClient
 
@@ -428,3 +432,40 @@ def test_main_exits_2_on_invalid_client_certificate(
         main()
     assert exc.value.code == 2
     assert "device.pem" in caplog.text
+
+
+def test_connect_failures_rate_limited(caplog: pytest.LogCaptureFixture) -> None:
+    outage = Outage("connexion MQTT rétablie")
+    on_fail = agent.on_connect_fail_callback(make_cfg(), outage)
+    event = threading.Event()
+    with caplog.at_level(logging.DEBUG, logger="claude-dash-agent"):
+        for _ in range(3):
+            on_fail(None, None)
+        on_connect_callback(event, outage)(None, None, None, _reason("Success"), None)
+    levels = [r.levelno for r in caplog.records]
+    assert levels[:3] == [logging.WARNING, logging.DEBUG, logging.DEBUG]
+    assert "iot.example:8883" in caplog.records[0].getMessage()
+    assert "connexion MQTT rétablie" in caplog.text
+    assert event.is_set()
+
+
+def test_client_wires_connect_fail_callback(fake_client: type[FakeClient]) -> None:
+    client = agent._make_client(make_cfg(), threading.Event())
+    assert callable(client.on_connect_fail)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "hinted"),
+    [
+        ({"certfile": "/d.pem", "keyfile": "/d.key"}, True),
+        ({"certfile": "/d.pem", "keyfile": "/d.key", "retain": False}, False),
+        ({}, False),
+    ],
+)
+def test_startup_hint_retain_with_mtls(
+    caplog: pytest.LogCaptureFixture, overrides: dict[str, Any], hinted: bool
+) -> None:
+    with caplog.at_level(logging.INFO, logger="claude-dash-agent"):
+        agent.log_startup(make_cfg(**overrides))
+    assert "agent démarré" in caplog.text
+    assert ("retain = false recommandé" in caplog.text) is hinted

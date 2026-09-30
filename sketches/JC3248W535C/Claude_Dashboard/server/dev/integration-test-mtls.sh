@@ -113,13 +113,21 @@ EOF
 echo "== Étape 1 : connexion mTLS de l'agent avec le client id configuré"
 hook '{"hook_event_name":"SessionStart","session_id":"s1","cwd":"/x/arduino"}'
 start_agent
-connected=no
+connected=""
 for _ in $(seq 1 30); do
-  if docker logs "$BROKER" 2>&1 | grep -q "as $CLIENT_ID "; then connected=yes; break; fi
+  connected=$(docker logs "$BROKER" 2>&1 | grep "as $CLIENT_ID " || true)
+  [ -n "$connected" ] && break
   sleep 0.5
 done
-if [ "$connected" = yes ]; then
+if [ -n "$connected" ]; then
   pass "broker : client $CLIENT_ID connecté avec son certificat"
+  # MQTT 3.1.1 = p4 (Mosquitto 2.1, niveau de protocole) ou p2 (2.0) ; c1 = clean
+  # session (le plan Shared n'a pas de session persistante)
+  if grep -Eq '\(p[24], c1,' <<<"$connected"; then
+    pass "MQTT 3.1.1, clean session"
+  else
+    fail "protocole ou session inattendus: $connected"
+  fi
 else
   fail "agent non connecté au broker mTLS"
 fi
@@ -142,11 +150,12 @@ if [ -z "$retained" ]; then pass "pas de retained"; else fail "message retained 
 echo "== Étape 4 : nouvel abonné après une période d'inactivité (heartbeat ${HEARTBEAT} s)"
 sleep $((HEARTBEAT + 3))
 start=$(date +%s)
-payload=$(mqtt_cli mosquitto_sub "${SCREEN_TLS[@]}" -t "$TOPIC" -C 1 -W $((HEARTBEAT + 5)) \
+payload=$(mqtt_cli mosquitto_sub "${SCREEN_TLS[@]}" -t "$TOPIC" -C 1 -W $((HEARTBEAT + 6)) \
   2>/dev/null || true)
+# elapsed inclut le démarrage du conteneur client (~1 s)
 elapsed=$(($(date +%s) - start))
 if check_payload "$payload" '[s["state"] for s in d["sessions"]] == ["permission"]' &&
-  [ "$elapsed" -le $((HEARTBEAT + 3)) ]; then
+  [ "$elapsed" -le $((HEARTBEAT + 5)) ]; then
   pass "état reçu par heartbeat en ${elapsed} s"
 else
   fail "rien de conforme en ${elapsed} s (dernier message: ${payload:-<aucun>})"
@@ -163,6 +172,12 @@ if [ "$nocert_rc" -ne 0 ] && ! grep -q '"sessions"' <<<"$nocert"; then
   pass "connexion sans certificat refusée (rc=$nocert_rc: $(head -n 1 <<<"$nocert"))"
 else
   fail "client sans certificat accepté (rc=$nocert_rc: $nocert)"
+fi
+rejection=$(docker logs "$BROKER" 2>&1 | grep -m 1 "peer did not return a certificate" || true)
+if [ -n "$rejection" ]; then
+  pass "broker : refus du certificat journalisé ($rejection)"
+else
+  fail "broker : aucun refus de certificat dans le journal"
 fi
 
 echo "== Étape 6 : SessionEnd reçu en direct"

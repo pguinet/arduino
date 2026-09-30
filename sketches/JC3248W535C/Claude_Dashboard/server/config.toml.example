@@ -32,8 +32,8 @@ topic_prefix = "claude-dash"
 # tls = true
 # ca_certs = "~/.config/claude-dash/hub-ca.pem" # CA du hub (console)
 # certfile = "~/.config/claude-dash/serveur.crt"
-# keyfile = "~/.config/claude-dash/serveur.key" # chmod 600
-# client_id = "<Device ID>"                     # UUID du device "serveur"
+# keyfile = "~/.config/claude-dash/serveur.key" # chmod 600, non chiffrée
+# client_id = "<Device ID>"                     # UUID du device "serveur" (unique)
 # retain = false
 # topic_prefix = "claude-dash"
 #

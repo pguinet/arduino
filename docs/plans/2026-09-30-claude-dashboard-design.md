@@ -124,8 +124,10 @@ Paysage 480×320 (rotation 270°, comme Transit_Tracker), LVGL 8, Montserrat int
 - Deux identités MQTT aux droits minimaux : serveur = publication seule sur
   `claude-dash/<host>/#`, écran = abonnement seul sur `claude-dash/#`. Broker retenu,
   Scaleway IoT Hub (plan Shared) : un device par rôle authentifié en **mTLS**
-  (certificat + clé générés par Scaleway, client id = Device ID), et des **filtres
-  de messages** par device à la place des ACL par compte.
+  (certificat + clé générés par Scaleway, client id = Device ID, un seul client par
+  Device ID), et des **filtres de messages** par device à la place des ACL par
+  compte : serveur = publish accept `claude-dash/<hostname>/#`, subscribe reject `#` ;
+  écran = subscribe accept `claude-dash/#`, publish reject `#`.
 - Données publiées minimales : nom du dossier projet (pas le chemin), modèle, état,
   nom d'outil. Jamais de prompts ni de commandes.
 - Identifiants : `DASH_MQTT_*` dans `credentials.h` (+ placeholders dans

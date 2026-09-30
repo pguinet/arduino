@@ -40,12 +40,14 @@ courant, dans un dossier `mktemp` supprimé à la sortie (jamais dans le dépôt
 Mosquitto 2 écoute en TLS avec `require_certificate true` ; l'agent a `certfile`,
 `keyfile`, `client_id` = un UUID, `retain = false` et `heartbeat = 5`. Étapes :
 
-1. l'agent se connecte en mTLS avec le client id configuré (journal du broker) ;
+1. l'agent se connecte en mTLS avec le client id configuré, en MQTT 3.1.1 et clean
+   session (journal du broker) ;
 2. un abonné démarré avant le changement reçoit l'état `permission` en direct ;
 3. aucun message retained sur le broker (`mosquitto_sub --retained-only`) ;
 4. après une période d'inactivité, un nouvel abonné reçoit l'état par heartbeat
-   en moins de `heartbeat + 3` s ;
-5. un client sans certificat est refusé ;
+   en moins de `heartbeat + 5` s (démarrage du conteneur client compris) ;
+5. un client sans certificat est refusé, et le broker journalise le refus
+   (`peer did not return a certificate`) ;
 6. `SessionEnd` → `sessions` vide reçu en direct.
 
 Les fonctions communes aux deux scripts sont dans `dev/it-lib.sh`.

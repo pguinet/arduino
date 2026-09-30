@@ -136,17 +136,34 @@ def run_once(
             outage.recovered()
 
 
-def on_connect_callback(connected: threading.Event) -> Callable[..., None]:
+def on_connect_callback(
+    connected: threading.Event, connect_outage: Outage | None = None
+) -> Callable[..., None]:
     """Callback on_connect (API VERSION2) : signale la connexion à la boucle principale."""
 
     def on_connect(client: Any, userdata: Any, flags: Any, reason_code: Any, props: Any) -> None:
         if reason_code.is_failure:
             log.error("MQTT refusé (%s)", reason_code)
             return
+        if connect_outage:
+            connect_outage.recovered()
         log.info("MQTT connecté (%s)", reason_code)
         connected.set()
 
     return on_connect
+
+
+def on_connect_fail_callback(cfg: Config, connect_outage: Outage) -> Callable[..., None]:
+    """Callback on_connect_fail : WARNING au premier échec (TCP/TLS), puis DEBUG."""
+
+    def on_connect_fail(client: Any, userdata: Any) -> None:
+        connect_outage.failed(
+            "connexion MQTT impossible à %s:%s (réseau, TLS ou certificat), nouvel essai",
+            cfg.host,
+            cfg.port,
+        )
+
+    return on_connect_fail
 
 
 def _make_client(cfg: Config, connected: threading.Event) -> mqtt.Client:
@@ -157,8 +174,9 @@ def _make_client(cfg: Config, connected: threading.Event) -> mqtt.Client:
     if cfg.username:
         client.username_pw_set(cfg.username, cfg.password)
     client.reconnect_delay_set(min_delay=1, max_delay=60)
-    client.on_connect = on_connect_callback(connected)
-    client.on_connect_fail = lambda c, u: log.debug("connexion MQTT impossible, nouvel essai")
+    connect_outage = Outage("connexion MQTT rétablie")
+    client.on_connect = on_connect_callback(connected, connect_outage)
+    client.on_connect_fail = on_connect_fail_callback(cfg, connect_outage)
     client.on_disconnect = lambda c, u, f, rc, p: log.warning("MQTT déconnecté (%s)", rc)
     client.connect_async(cfg.host, cfg.port, keepalive=60)
     client.loop_start()
@@ -182,6 +200,18 @@ def make_publisher(send: Callable[[str], None], cfg: Config) -> Publisher:
     return Publisher(send, min_interval=2, heartbeat=cfg.heartbeat)
 
 
+def log_startup(cfg: Config) -> None:
+    log.info(
+        "agent démarré, topic %s (client id %s, retain=%s, heartbeat %s s)",
+        cfg.topic,
+        cfg.client_id,
+        cfg.retain,
+        cfg.heartbeat,
+    )
+    if cfg.certfile and cfg.retain:
+        log.info("broker stateless (ex. Scaleway Shared) : retain = false recommandé")
+
+
 def run(cfg: Config, client: mqtt.Client, connected: threading.Event) -> None:
     base = store.default_base()
     publisher = make_publisher(make_sender(client, cfg), cfg)
@@ -194,13 +224,7 @@ def run(cfg: Config, client: mqtt.Client, connected: threading.Event) -> None:
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
-    log.info(
-        "agent démarré, topic %s (client id %s, retain=%s, heartbeat %s s)",
-        cfg.topic,
-        cfg.client_id,
-        cfg.retain,
-        cfg.heartbeat,
-    )
+    log_startup(cfg)
     while not stop:
         if connected.is_set():
             connected.clear()

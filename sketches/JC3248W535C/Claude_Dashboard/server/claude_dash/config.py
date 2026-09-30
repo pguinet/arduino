@@ -114,6 +114,16 @@ def _client_cert(mqtt: dict[str, Any], tls: bool) -> tuple[str | None, str | Non
     mode = stat.S_IMODE(Path(keyfile).stat().st_mode)
     if mode & 0o077:
         raise ConfigError(f"keyfile {keyfile} doit être en chmod 600 (actuel {mode:o})")
+    try:
+        pem = Path(keyfile).read_text(errors="replace")
+    except OSError as exc:
+        raise ConfigError(f"keyfile illisible: {exc}") from None
+    # Sans tty (systemd), une clé chiffrée ferait échouer tls_set : refus explicite.
+    if "ENCRYPTED" in pem:
+        raise ConfigError(
+            f"keyfile {keyfile} est chiffrée : la déchiffrer "
+            f"(openssl pkey -in {keyfile} -out clair.key, puis remplacer, chmod 600)"
+        )
     return certfile, keyfile
 
 
