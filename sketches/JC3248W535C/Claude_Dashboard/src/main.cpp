@@ -1,13 +1,13 @@
 /*
  * Claude_Dashboard - JC3248W535C
  *
- * Tableau de bord des sessions Claude Code d'un ou plusieurs serveurs :
- * quotas 5h/7j, une carte par session (etat, outil, contexte, duree).
- * Les snapshots arrivent par MQTT/TLS (Scaleway IoT Hub, mTLS) depuis
- * l'agent claude-dash-agent (dossier server/).
+ * Tableau de bord Claude Code : quotas du forfait, etat des sessions
+ * (travaille / attente / permission) et contexte, recus d'un serveur
+ * distant via MQTT/TLS. Bip et reveil de l'ecran quand une session
+ * attend une reponse.
  *
- * Board: Guition JC3248W535C (ESP32-S3, LCD tactile 3.5" 320x480)
- * FQBN: PlatformIO esp32-s3-devkitc-1 (pioarduino)
+ * Board: JC3248W535C (ESP32-S3 + LCD tactile 3.5")
+ * FQBN: PlatformIO esp32-s3-devkitc-1
  *
  * @dependencies LVGL 8.3.x, ArduinoJson, PubSubClient
  */
@@ -59,15 +59,17 @@
 #define WDT_TIMEOUT_SEC      30
 #define MQTT_TOPIC           "claude-dash/+/state"
 #define MQTT_BUFFER_SIZE     4096
-#define WIFI_RETRY_MS        10000UL
+#define WIFI_FORCE_AFTER_MS  30000UL   // reconnexion forcee apres 30 s sans WiFi
 #define MQTT_RETRY_MIN_MS    5000UL
 #define MQTT_RETRY_MAX_MS    60000UL
 #define CLOCK_SKEW_WARN_S    30
+#define CLOCK_SKEW_REPEAT_MS (10UL * 60UL * 1000UL)  // un avertissement par hote / 10 min
 #define TZ_PARIS             "CET-1CEST,M3.5.0,M10.5.0/3"
 static const time_t CLOCK_VALID_AFTER = 1704067200;  // 2024-01-01
 
-// Pire cas d'une tentative MQTT (bloquante) : DNS (resolu a part, WDT reinitialise)
-// + TCP 5 s + handshake TLS 8 s + CONNACK 5 s = 18 s < WDT 30 s.
+// Pire cas d'une tentative MQTT (bloquante) : DNS ~10 s (resolu a part, WDT
+// reinitialise avant et apres), puis TCP 5 s + handshake TLS 8 s + CONNACK 5 s
+// = 18 s < WDT 30 s.
 #define TCP_CONNECT_TIMEOUT_MS 5000
 #define TLS_HANDSHAKE_TIMEOUT_S 8
 #define MQTT_SOCKET_TIMEOUT_S  5
@@ -114,6 +116,10 @@ static bool pemValid(const char *name, const char *pem, bool isKey)
         mbedtls_x509_crt_free(&crt);
     }
     if (ret == 0) return true;
+    if (ret > 0) {  // x509 : au moins un certificat lu, ret = nombre d'illisibles
+        Serial.printf("Attention credentials.h : %s, %d certificat(s) ignore(s)\n", name, ret);
+        return true;
+    }
     Serial.printf("ERREUR credentials.h : %s invalide (mbedTLS -0x%04x), MQTT desactive "
                   "(voir sketches/common/credentials.h.example)\n", name, (unsigned)-ret);
     return false;
@@ -128,16 +134,48 @@ static bool checkCredentials()
     return ok;
 }
 
+// "claude-dash/<host>/state" exactement -> host. Faux sinon.
+static bool hostFromTopic(const char *topic, char *host)
+{
+    int n = 0;
+    return sscanf(topic, "claude-dash/%32[^/]/state%n", host, &n) == 1 && n > 0 &&
+           topic[n] == '\0';
+}
+
+// Vrai si l'avertissement de decalage d'horloge pour cet hote est du
+// (au plus un par hote toutes les 10 min).
+static bool skewWarningDue(const char *host, uint32_t ms)
+{
+    static struct {
+        char host[sizeof(dash::HostSnapshot::host)];
+        uint32_t at;
+    } seen[dash::MAX_HOSTS];
+    int slot = 0;
+    for (int i = 0; i < dash::MAX_HOSTS; i++) {
+        if (strcmp(seen[i].host, host) == 0) {
+            if (ms - seen[i].at < CLOCK_SKEW_REPEAT_MS) return false;
+            slot = i;
+            break;
+        }
+        if (seen[i].at < seen[slot].at) slot = i;  // sinon : le plus ancien
+    }
+    strlcpy(seen[slot].host, host, sizeof seen[slot].host);
+    seen[slot].at = ms;
+    return true;
+}
+
 // Appele depuis mqtt.loop(), donc dans la tache loop() : pas de concurrence.
 static void onMessage(char *topic, byte *payload, unsigned int len)
 {
     if (!clockValid()) return;  // staleness et transitions n'ont pas de sens sans heure
     time_t now = time(nullptr);
 
+    char host[sizeof incoming.host];
+    if (!hostFromTopic(topic, host)) return;
+
     if (len == 0) {
-        // Message vide sur "claude-dash/<host>/state" : l'hote est retire.
-        char host[sizeof incoming.host];
-        if (sscanf(topic, "claude-dash/%32[^/]/state", host) == 1 && dashboard.removeHost(host)) {
+        // Message vide : l'hote est retire.
+        if (dashboard.removeHost(host)) {
             Serial.printf("Hote retire : %s\n", host);
             renderNeeded = true;
         }
@@ -147,10 +185,20 @@ static void onMessage(char *topic, byte *payload, unsigned int len)
         Serial.printf("Snapshot invalide sur %s (%u o)\n", topic, len);
         return;
     }
+    if (strcmp(incoming.host, host) != 0) {
+        // Les filtres Scaleway limitent chaque serveur a son topic : un host
+        // different dans le payload usurperait un autre serveur.
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            Serial.printf("Snapshot ignore : host \"%s\" different du topic %s\n", incoming.host, topic);
+        }
+        return;
+    }
     // Un decalage d'horloge fait juger les snapshots perimes, ce qui rend
     // l'ecran muet (alertes supprimees) : le signaler.
     long long skew = (long long)now - (long long)incoming.ts;
-    if (incoming.ts > 0 && llabs(skew) > CLOCK_SKEW_WARN_S)
+    if (incoming.ts > 0 && llabs(skew) > CLOCK_SKEW_WARN_S && skewWarningDue(host, millis()))
         Serial.printf("Attention : horloge decalee de %lld s avec %s (verifier NTP sur le serveur)\n",
                       skew, incoming.host);
 
@@ -164,12 +212,21 @@ static bool mqttConnect()
 {
     // DNS a part : la resolution peut durer plusieurs secondes, le WDT est
     // reinitialise avant la connexion TLS (le resultat est mis en cache par lwIP).
-    IPAddress ip;
-    if (!WiFi.hostByName(DASH_MQTT_SERVER, ip)) {
-        Serial.println("MQTT : echec DNS du broker");
-        return false;
-    }
     esp_task_wdt_reset();
+    IPAddress ip;
+    uint32_t tDns = millis();
+    bool resolved = WiFi.hostByName(DASH_MQTT_SERVER, ip);
+    tDns = millis() - tDns;
+    esp_task_wdt_reset();
+    if (!resolved) {
+        Serial.printf("MQTT : echec DNS du broker apres %lu ms\n", (unsigned long)tDns);
+        return false;  // meme backoff qu'un echec de connexion
+    }
+    static bool dnsShown = false;
+    if (!dnsShown) {
+        dnsShown = true;
+        Serial.printf("DNS du broker resolu en %lu ms\n", (unsigned long)tDns);
+    }
 
     uint32_t t0 = millis();
     if (!mqtt.connect(DASH_MQTT_CLIENT_ID)) {
@@ -197,20 +254,22 @@ static bool mqttConnect()
     return true;
 }
 
+// La reconnexion automatique du driver fait l'essentiel ; on ne relance
+// disconnect()/begin() qu'apres 30 s continues sans WiFi (y compris au demarrage).
 static void handleWifi(uint32_t ms)
 {
-    static uint32_t lastAttempt = 0;
+    static uint32_t downSince = 0;  // debut de la coupure (0 = demarrage)
     static bool wasConnected = false;
     bool connected = WiFi.status() == WL_CONNECTED;
     if (connected != wasConnected) {
         wasConnected = connected;
         if (connected) Serial.printf("WiFi connecte, IP %s\n", WiFi.localIP().toString().c_str());
         else Serial.println("WiFi perdu");
-        lastAttempt = ms;
+        downSince = ms;
     }
-    if (!connected && ms - lastAttempt >= WIFI_RETRY_MS) {
-        lastAttempt = ms;
-        Serial.println("Reconnexion WiFi...");
+    if (!connected && ms - downSince >= WIFI_FORCE_AFTER_MS) {
+        downSince = ms;
+        Serial.println("WiFi absent depuis 30 s : reconnexion forcee");
         WiFi.disconnect();
         WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     }
@@ -225,8 +284,20 @@ static bool credentialsOk = false;
 static void handleMqtt(uint32_t ms)
 {
     static uint32_t lastAttempt = 0;
-    static uint32_t retryDelay = 0;  // 0 : premiere tentative immediate
+    static uint32_t retryDelay = 0;  // 0 : tentative immediate
+    static bool wifiWasUp = false;
 
+    bool wifiUp = WiFi.status() == WL_CONNECTED;
+    if (wifiUp != wifiWasUp) {
+        wifiWasUp = wifiUp;
+        if (wifiUp) retryDelay = 0;  // WiFi revenu : retenter tout de suite
+    }
+    if (mqttUp && !wifiUp) {
+        // Sans WiFi, la socket TLS ne le verrait qu'au keepalive (jusqu'a 90 s).
+        mqtt.disconnect();
+        mqttUp = false;
+        Serial.println("MQTT deconnecte (WiFi perdu)");
+    }
     if (mqttUp) {
         if (mqtt.loop()) return;
         mqttUp = false;
@@ -243,7 +314,7 @@ static void handleMqtt(uint32_t ms)
         }
         return;
     }
-    if (WiFi.status() != WL_CONNECTED || !clockValid()) return;  // TLS exige l'heure
+    if (!wifiUp || !clockValid()) return;  // TLS exige l'heure
     if (ms - lastAttempt < retryDelay) return;
 
     mqttUp = mqttConnect();
@@ -267,7 +338,11 @@ void setup()
         .idle_core_mask = 0,
         .trigger_panic = true,
     };
-    esp_task_wdt_init(&wdt_config);
+    // Le TWDT est deja demarre par le framework (CONFIG_ESP_TASK_WDT_INIT, 5 s) :
+    // esp_task_wdt_init() seul echouerait (ESP_ERR_INVALID_STATE) et laisserait 5 s.
+    esp_err_t err = esp_task_wdt_reconfigure(&wdt_config);
+    if (err == ESP_ERR_INVALID_STATE) err = esp_task_wdt_init(&wdt_config);
+    if (err != ESP_OK) Serial.printf("WDT : configuration echouee (%d)\n", err);
     esp_task_wdt_add(NULL);
 
     bsp_display_cfg_t cfg = {
