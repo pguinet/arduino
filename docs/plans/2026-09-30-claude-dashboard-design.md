@@ -111,8 +111,8 @@ Paysage 480×320 (rotation 270°, comme Transit_Tracker), LVGL 8, Montserrat int
   défilement tactile au-delà de 3 sessions. Couleurs : rouge / orange / bleu.
 - **Alerte** à la *transition* vers `permission` (deux notes aiguës) ou `idle` (une
   note grave) via le NS4168 (I2S) + rallumage du rétroéclairage. Jamais en boucle.
-- **Veille** : écran éteint après 10 min sans session en attente ni toucher ; un
-  toucher le rallume. Rétroéclairage on/off uniquement.
+- **Veille** : écran allumé tant qu'au moins une session est listée ; sans session,
+  extinction après 10 min sans toucher ; un toucher le rallume. Rétroéclairage on/off uniquement.
 - **États dégradés** : pastille rouge si WiFi/MQTT coupé (reconnexion auto) ; bandeau
   « Serveur injoignable depuis X min » sans heartbeat depuis 3 min, données grisées ;
   « Aucune session active » sinon.

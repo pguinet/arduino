@@ -204,15 +204,41 @@ void test_stale_seconds_max_over_hosts() {
     TEST_ASSERT_EQUAL(500, (long)d.staleSeconds(1000));
 }
 
-void test_any_waiting() {
+void test_session_count_empty() {
     Dashboard d;
-    const char *ids[] = {"a"};
-    State w[] = {State::Working}, i[] = {State::Idle};
-    int64_t t[] = {1};
-    d.apply(mk("h", 1, ids, w, t), 1);
-    TEST_ASSERT_FALSE(d.anyWaiting());
-    d.apply(mk("h", 1, ids, i, t), 2);
-    TEST_ASSERT_TRUE(d.anyWaiting());
+    TEST_ASSERT_EQUAL(0, d.sessionCount());
+}
+
+void test_session_count_sums_hosts_any_state() {
+    Dashboard d;
+    const char *ids[] = {"a", "b"};
+    State st[] = {State::Working, State::Permission}, idle[] = {State::Idle};
+    int64_t t[] = {1, 2};
+    d.apply(mk("h1", 2, ids, st, t), 10);
+    d.apply(mk("h2", 1, ids, idle, t), 10);
+    TEST_ASSERT_EQUAL(3, d.sessionCount());
+}
+
+void test_session_count_after_remove_host() {
+    Dashboard d;
+    const char *ids[] = {"a", "b"};
+    State st[] = {State::Working, State::Idle};
+    int64_t t[] = {1, 2};
+    d.apply(mk("h1", 2, ids, st, t), 10);
+    d.apply(mk("h2", 1, ids, st, t), 10);
+    TEST_ASSERT_TRUE(d.removeHost("h1"));
+    TEST_ASSERT_EQUAL(1, d.sessionCount());
+    TEST_ASSERT_TRUE(d.removeHost("h2"));
+    TEST_ASSERT_EQUAL(0, d.sessionCount());
+}
+
+void test_session_count_zero_when_host_has_no_session() {
+    Dashboard d;
+    HostSnapshot s;
+    strcpy(s.host, "h");
+    d.apply(s, 10);
+    TEST_ASSERT_EQUAL(1, d.hostCount());
+    TEST_ASSERT_EQUAL(0, d.sessionCount());
 }
 
 void test_alert_idle_after_permission() {
@@ -464,7 +490,10 @@ int main() {
     RUN_TEST(test_stale_seconds_uses_snapshot_ts);
     RUN_TEST(test_stale_seconds_future_ts_clamped);
     RUN_TEST(test_stale_seconds_max_over_hosts);
-    RUN_TEST(test_any_waiting);
+    RUN_TEST(test_session_count_empty);
+    RUN_TEST(test_session_count_sums_hosts_any_state);
+    RUN_TEST(test_session_count_after_remove_host);
+    RUN_TEST(test_session_count_zero_when_host_has_no_session);
     RUN_TEST(test_alert_idle_after_permission);
     RUN_TEST(test_session_gone_then_back_no_alert);
     RUN_TEST(test_limits_skip_host_without_limits);

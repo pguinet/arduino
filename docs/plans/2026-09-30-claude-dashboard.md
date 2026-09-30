@@ -1700,7 +1700,7 @@ lib_deps =
  * Board: JC3248W535C (ESP32-S3 + LCD tactile 3.5")
  * FQBN: PlatformIO esp32-s3-devkitc-1
  *
- * @dependencies LVGL 8.3.x, ArduinoJson, PubSubClient
+ * @dependencies LVGL 8.4.x, ArduinoJson, PubSubClient
  */
 
 #include <Arduino.h>
@@ -2067,7 +2067,8 @@ public:
     // Age maximal parmi les hotes (0 si aucun) : now - snap.ts, ou now - reception
     // si ts inconnu ; borne a 0.
     int64_t staleSeconds(int64_t now) const;
-    bool anyWaiting() const;
+    // Nombre total de sessions listees (tous hotes, tous etats, perimes compris).
+    int sessionCount() const;
 
 private:
     struct HostEntry {
@@ -2083,8 +2084,10 @@ void formatDuration(int64_t seconds, char *out, size_t size);  // "0:42", "5:10"
 uint32_t colorForPercent(int pct);                             // vert / orange / rouge
 const char *stateLabel(State s);                                // "TRAVAILLE", "ATTENTE", "PERMISSION"
 
-// Veille : ecran allume si une session attend, ou activite recente (ms).
-bool screenShouldBeOn(bool anyWaiting, uint32_t nowMs, uint32_t lastActivityMs,
+// Veille : ecran allume tant qu'au moins une session est listee ; sans session,
+// eteint apres timeoutMs sans activite (toucher, alerte, disparition de la
+// derniere session), mesuree depuis lastActivityMs (robuste au rebouclage).
+bool screenShouldBeOn(bool hasSessions, uint32_t nowMs, uint32_t lastActivityMs,
                       uint32_t timeoutMs = 10UL * 60UL * 1000UL);
 
 }  // namespace dash
@@ -2411,16 +2414,23 @@ void test_stale_seconds_max_over_hosts() {
     TEST_ASSERT_EQUAL(500, (long)d.staleSeconds(1000));
 }
 
-void test_any_waiting() {
+void test_session_count_empty() {
     Dashboard d;
-    const char *ids[] = {"a"};
-    State w[] = {State::Working}, i[] = {State::Idle};
-    int64_t t[] = {1};
-    d.apply(mk("h", 1, ids, w, t), 1);
-    TEST_ASSERT_FALSE(d.anyWaiting());
-    d.apply(mk("h", 1, ids, i, t), 2);
-    TEST_ASSERT_TRUE(d.anyWaiting());
+    TEST_ASSERT_EQUAL(0, d.sessionCount());
 }
+
+void test_session_count_sums_hosts_any_state() {
+    Dashboard d;
+    const char *ids[] = {"a", "b"};
+    State st[] = {State::Working, State::Permission}, idle[] = {State::Idle};
+    int64_t t[] = {1, 2};
+    d.apply(mk("h1", 2, ids, st, t), 10);
+    d.apply(mk("h2", 1, ids, idle, t), 10);
+    TEST_ASSERT_EQUAL(3, d.sessionCount());
+}
+
+// + test_session_count_after_remove_host (1 puis 0 apres removeHost) et
+//   test_session_count_zero_when_host_has_no_session (hote connu, 0 session).
 
 void test_alert_idle_after_permission() {
     Dashboard d;
@@ -2547,7 +2557,10 @@ int main() {
     RUN_TEST(test_stale_seconds_uses_snapshot_ts);
     RUN_TEST(test_stale_seconds_future_ts_clamped);
     RUN_TEST(test_stale_seconds_max_over_hosts);
-    RUN_TEST(test_any_waiting);
+    RUN_TEST(test_session_count_empty);
+    RUN_TEST(test_session_count_sums_hosts_any_state);
+    RUN_TEST(test_session_count_after_remove_host);
+    RUN_TEST(test_session_count_zero_when_host_has_no_session);
     RUN_TEST(test_alert_idle_after_permission);
     RUN_TEST(test_session_gone_then_back_no_alert);
     RUN_TEST(test_limits_skip_host_without_limits);
@@ -2682,11 +2695,10 @@ int64_t Dashboard::staleSeconds(int64_t now) const {
     return worst;
 }
 
-bool Dashboard::anyWaiting() const {
-    for (int h = 0; h < count_; h++)
-        for (int i = 0; i < hosts_[h].snap.count; i++)
-            if (hosts_[h].snap.sessions[i].state != State::Working) return true;
-    return false;
+int Dashboard::sessionCount() const {
+    int n = 0;
+    for (int h = 0; h < count_; h++) n += hosts_[h].snap.count;
+    return n;
 }
 ```
 
@@ -2745,7 +2757,10 @@ void test_state_labels() {
 
 void test_screen_policy() {
     const uint32_t T = 600000;
+    // au moins une session listee : toujours allume, meme longtemps apres l'activite
     TEST_ASSERT_TRUE(screenShouldBeOn(true, 10 * T, 0));
+    TEST_ASSERT_TRUE(screenShouldBeOn(true, T, 0xFFFFFF00u));
+    // aucune session : extinction apres le timeout depuis la derniere activite
     TEST_ASSERT_TRUE(screenShouldBeOn(false, T - 1, 0));
     TEST_ASSERT_FALSE(screenShouldBeOn(false, T, 0));
     // debordement de millis() (~49 j)
@@ -2789,9 +2804,9 @@ const char *stateLabel(State s) {
     }
 }
 
-bool screenShouldBeOn(bool anyWaiting, uint32_t nowMs, uint32_t lastActivityMs,
+bool screenShouldBeOn(bool hasSessions, uint32_t nowMs, uint32_t lastActivityMs,
                       uint32_t timeoutMs) {
-    return anyWaiting || (uint32_t)(nowMs - lastActivityMs) < timeoutMs;
+    return hasSessions || (uint32_t)(nowMs - lastActivityMs) < timeoutMs;
 }
 ```
 
@@ -2801,6 +2816,11 @@ ne fait rien si `size == 0`. Tests ajoutés : bornes 3600/86399/86400, `999j`/`9
 /`INT64_MAX`/`INT64_MIN`, petit buffer (troncature snprintf), couleur à 100,
 veille après débordement et timeout explicite. `colorForPercent(-1)` reste vert
 (comportement du plan) : les appelants testent `< 0` (inconnu) avant.
+Politique de veille revue après la Task 14 (retour utilisateur) : l'écran reste
+allumé tant qu'au moins une session est listée (tout état, tout hôte, périmé ou
+non) ; `screenShouldBeOn(hasSessions, ...)` remplace `anyWaiting` par
+`hasSessions`, et `Dashboard::sessionCount()` remplace `anyWaiting()` (plus utilisé,
+retiré avec son test).
 
 **Step 4: Vérifier** — `$PIO test -e native` → tout PASS.
 
@@ -3112,7 +3132,7 @@ Broker = Scaleway IoT Hub, plan Shared (Task 5b) : mTLS, client id = Device ID d
 - `MAX_CARDS = 16` cartes au plus, puis un libellé gris « +N autres sessions » (lignes triées par urgence : rien d'important n'est coupé).
 - `ui_tick` ne touche aux objets que si l'état affiché change : texte des labels comparé avant `lv_label_set_text` (horloge, durées, bandeau), pastille MQTT et état périmé (bandeau + opacité de la liste) mis en cache. Sans session, plus de redessin chaque seconde.
 
-**Step 3: `main.cpp`.** En-tête standard du sketch (bloc `Claude_Dashboard - JC3248W535C` … `@dependencies LVGL 8.3.x, ArduinoJson, PubSubClient`). Plus de démo (`loadDemo`, `settimeofday` fixe, reconstruction toutes les 5 s, attente du port série).
+**Step 3: `main.cpp`.** En-tête standard du sketch (bloc `Claude_Dashboard - JC3248W535C` … `@dependencies LVGL 8.4.x, ArduinoJson, PubSubClient`). Plus de démo (`loadDemo`, `settimeofday` fixe, reconstruction toutes les 5 s, attente du port série).
 - `#error` explicite si une macro de `credentials.h` manque (`WIFI_SSID`, `WIFI_PASSWORD`, `DASH_MQTT_SERVER`, `DASH_MQTT_PORT`, `DASH_MQTT_CLIENT_ID`, `DASH_MQTT_CA_CERT`, `DASH_MQTT_CLIENT_CERT`, `DASH_MQTT_CLIENT_KEY`), modèle `sketches/common/credentials.h.example`.
 - Au démarrage, les trois PEM sont analysés par mbedTLS (`mbedtls_x509_crt_parse` / `mbedtls_pk_parse_key`) ; un retour positif de `x509_crt_parse` (au moins un certificat lu, N illisibles) donne un simple avertissement « N certificat(s) ignore(s) ». Un PEM invalide est nommé (`ERREUR credentials.h : DASH_MQTT_CA_CERT invalide ...`), MQTT est désactivé, et le message est répété toutes les 60 s pour un moniteur ouvert tard. L'erreur du handshake (-4396, « BASE64 - Invalid character ») ne dit pas lequel est en cause.
 - `setup()` : watchdog 30 s. Le framework démarre déjà le TWDT à 5 s (`CONFIG_ESP_TASK_WDT_INIT=y`, `TIMEOUT_S=5`) : `esp_task_wdt_init()` seul renvoie `ESP_ERR_INVALID_STATE` et laisse 5 s, ce qui ferait paniquer une tentative de connexion de 18 s. D'où :
@@ -3144,7 +3164,7 @@ mqtt.setCallback(onMessage);
 - État MQTT suivi dans `mqttUp` (vrai après `mqttConnect()`, faux dès que `mqtt.loop()` renvoie `false`) : après un échec de connexion, `NetworkClientSecure::connected()` (appelé par `mqtt.connected()`) journalise `setSocketOption(): fail on 0, errno: 9` à chaque appel, soit ~36 lignes/s si on l'interroge à chaque tour de boucle.
 - `onMessage` : ignoré tant que l'heure n'est pas valide ; hôte extrait du topic, qui doit être exactement `claude-dash/<host>/state` (`sscanf` avec `%n`, `topic[n] == '\0'`) ; payload vide → `removeHost()` ; sinon `parseSnapshot()`, snapshot ignoré si son `host` diffère de celui du topic (journalisé une fois : les filtres Scaleway cantonnent chaque serveur à son topic, un autre `host` usurperait un autre serveur), avertissement si `|time(nullptr) - ts| > 30 s` (« verifier NTP sur le serveur » : un décalage fait juger les snapshots périmés et rend l'écran muet ; au plus une fois par hôte toutes les 10 min), puis `apply(snap, now, &changed)` ; `renderNeeded` seulement si `changed`.
 
-**Step 4: Vérifier.** `$PIO test -e native` (52 tests) ; `$PIO run -e esp32s3` → SUCCESS ; `$PIO check -e esp32s3 --skip-packages` → aucun défaut dans `src/main.cpp`, `src/ui.cpp`, `lib/dash_model`.
+**Step 4: Vérifier.** `$PIO test -e native` (52 tests à cette étape) ; `$PIO run -e esp32s3` → SUCCESS ; `$PIO check -e esp32s3 --skip-packages` → aucun défaut dans `src/main.cpp`, `src/ui.cpp`, `lib/dash_model`.
 
 **Step 5: Test sur la carte.** Upload, puis capture série (`timeout 40 script -qfc "$PIO device monitor -e esp32s3" log < /dev/null`, jamais d'accès direct au port). Attendu : `WiFi connecte`, `NTP synchronise`, `MQTT connecte en ... ms`, `Abonne a claude-dash/+/state (QoS 0)`, `[TLS connecte] heap interne ...` ; écran : pastille verte, « En attente de donnees... » jusqu'au premier heartbeat. Puis, agent lancé sur le serveur : cartes affichées sous ~20 s. Si `MQTT echec rc=-2` : lire le texte mbedTLS (heure NTP, CA du hub, certificat/clé du device, filtres de messages du device dans la console Scaleway).
 
@@ -3171,7 +3191,7 @@ void beep_play(const BeepNote *notes, size_t count, uint8_t volume = BEEP_VOLUME
 ```
 
 - `beep_begin()` : `i2s.setPins(42, 2, 41)` puis `i2s.begin(I2S_MODE_STD, 16000, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO)` (échantillon dupliqué sur les deux canaux : le NS4168 lit celui que choisit sa broche CTRL), puis `i2s_channel_disable(i2s.txChan())`. Échec → « I2S : echec init, bips desactives », bips ignorés.
-- `beep_play()` : `i2s_channel_enable()`, notes en sinus (`sinf`, enveloppe linéaire de 5 ms en début/fin de note : pas de clic), silences écrits dans le flux (pas de `delay()`), queue silencieuse de 100 ms (> tampon DMA de 6 × 240 trames = 90 ms, donc la note est entièrement jouée), puis `i2s_channel_disable()`. Canal désactivé = plus d'horloge : le NS4168 se met en veille, pas de souffle entre deux alertes. `i2s.end()` à chaque bip est évité : ESP_I2S 3.0.7 libère MCLK même inutilisé et journalise `perimanSetPinBus(): Invalid pin: 255` (constaté sur la carte). `write()` est bloquant (timeout Stream 1 s) ; `auto_clear` du DMA émet des zéros en cas de sous-alimentation.
+- `beep_play()` : `i2s_channel_enable()`, notes en sinus (`sinf`, enveloppe linéaire de 5 ms en début/fin de note : pas de clic), silences écrits dans le flux (pas de `delay()`), queue silencieuse de 100 ms (> tampon DMA de 6 × 240 trames = 90 ms, donc la note est entièrement jouée), puis `i2s_channel_disable()`. Canal désactivé = plus d'horloge : le NS4168 se met en veille, pas de souffle entre deux alertes. `i2s.end()` à chaque bip est évité : ESP_I2S 3.0.7 libère MCLK même inutilisé et journalise `perimanSetPinBus(): Invalid pin: 255` (constaté sur la carte). `write()` est bloquant (timeout Stream 1 s) ; un `write()` qui renvoie 0 (canal en erreur) interrompt le bip au lieu de bloquer ; `auto_clear` du DMA émet des zéros en cas de sous-alimentation.
 
 **Step 2: Brancher dans `main.cpp`**
 
@@ -3187,23 +3207,25 @@ static void alertTriggered(dash::Alert a) {
 
 - `beep_begin()` dans `setup()` après l'écran ; `lastActivityMs = millis()` en fin de `setup()`.
 - Alerte en attente traitée dans `loop()` hors verrou LVGL (bip synchrone : 330 ms pour permission, 255 ms pour attente, mesurés ; sans risque pour le keepalive MQTT ni le WDT 30 s). dash_model ne lève pas d'alerte pour une session inconnue : pas de bip au démarrage ni au premier snapshot.
-- Toucher : pas de callback LVGL (la liste et les cartes consomment les pressions). `updateScreen()`, appelée chaque seconde après `ui_tick`, lit `lv_disp_get_inactive_time(NULL)` sous verrou : LVGL date l'activité de l'indev tactile, qui reste lu quand le rétroéclairage est éteint (simple PWM LEDC à 0). `touchAt = millis() - inactive` remplace `lastActivityMs` s'il est plus récent (comparaison signée, robuste au rebouclage) ; écran éteint → rallumé (« toucher »). Le premier toucher ne déclenche rien d'autre (pas de bouton ; défilement sans conséquence).
-- Politique : `setScreen(dash::screenShouldBeOn(dashboard.anyWaiting(), ms, lastActivityMs, SCREEN_TIMEOUT_MS), ...)`, `SCREEN_TIMEOUT_MS` = 10 min, surchargeable à la compilation pour les essais (`PLATFORMIO_BUILD_FLAGS="-DSCREEN_TIMEOUT_MS=45000UL"`). `setScreen()` appelle `bsp_display_backlight_on()/off()` et journalise chaque bascule (« Ecran allume (alerte|toucher|session en attente) », « Ecran eteint (inactif) »).
+- Toucher : pas de callback LVGL (la liste et les cartes consomment les pressions). `pollTouch()`, appelée à chaque tour de `loop()` (réveil immédiat), lit `lv_disp_get_inactive_time(NULL)` sous verrou : LVGL date l'activité de l'indev tactile, qui reste lu quand le rétroéclairage est éteint (simple PWM LEDC à 0). Seul un toucher récent (`inactive < 1500 ms`) est pris en compte, sinon `millis() - inactive` comparé à `lastActivityMs` déborderait après ~24,8 j sans toucher ; `touchAt` remplace alors `lastActivityMs` s'il est plus récent (comparaison signée) et rallume l'écran (« toucher »). Le premier toucher ne déclenche rien d'autre (pas de bouton ; défilement sans conséquence).
+- Politique (retour utilisateur) : écran allumé tant qu'au moins une session est listée (tout état, tout hôte, périmé ou non) ; sans session, extinction après 10 min sans activité. `updateScreen()`, chaque seconde après `ui_tick` : `count = dashboard.sessionCount()` (Task 10/11) ; passage de > 0 à 0 → `lastActivityMs = millis()` (pas d'extinction brutale à la fin de la dernière session) ; puis `setScreen(dash::screenShouldBeOn(count > 0, ms, lastActivityMs, SCREEN_TIMEOUT_MS), ...)`. `lastActivityMs` = max(démarrage, dernier toucher, dernière alerte, disparition de la dernière session). `SCREEN_TIMEOUT_MS` = 10 min, surchargeable à la compilation pour les essais (`PLATFORMIO_BUILD_FLAGS="-DSCREEN_TIMEOUT_MS=45000UL"`). `setScreen()` appelle `bsp_display_backlight_on()/off()` et journalise chaque bascule (« Ecran allume (alerte|toucher|session listee) », « Ecran eteint (inactif) »).
 
 **Step 3: Compiler + upload**, puis scénario sur le système réel : faux fichier de session `~/.claude/dashboard/sessions/test-beep.json` (pid d'un `sleep 600`, écritures atomiques tmp + `mv`, pauses > 3 s), avec un firmware d'essai à 45 s de veille :
 1. `working` → aucun bip (session inconnue) ;
 2. `permission` → « Ecran allume (alerte) », « Alerte : permission, 2 bips aigus », carte rouge en tête ;
 3. `idle` → « Alerte : attente, 1 bip grave » ; réécrire `idle` → aucun bip ;
-4. `working` → « Ecran eteint (inactif) » 45 s après la dernière alerte (si aucune vraie session n'attend) ;
+4. (politique initiale « session en attente », remplacée depuis) `working` → « Ecran eteint (inactif) » 45 s après la dernière alerte. Avec la politique finale, l'écran reste allumé tant qu'une session est listée ; capture de 30 s avec la vraie session listée : aucune extinction ;
 5. supprimer le faux fichier et tuer le `sleep` (l'agent purge la session), puis reflasher le firmware par défaut (10 min).
 
-Le délai réel de 10 min et le réveil au toucher sont à vérifier à la main. Ajuster `BEEP_VOLUME` si trop fort/faible.
+Le délai réel de 10 min (sans aucune session) et le réveil au toucher sont à vérifier à la main. Ajuster `BEEP_VOLUME` si trop fort/faible.
 
 **Step 4: Commit**
 
 ```bash
 git add $FW/src $FW/platformio.ini docs/plans/2026-09-30-claude-dashboard.md
 git commit -m "Claude_Dashboard: bip I2S sur attente et veille de l'ecran"
+# apres retour utilisateur et revue :
+git commit -m "Claude_Dashboard: ecran allume tant qu'une session est listee"
 ```
 
 ---

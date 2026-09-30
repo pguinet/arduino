@@ -9,7 +9,7 @@
  * Board: JC3248W535C (ESP32-S3 + LCD tactile 3.5")
  * FQBN: PlatformIO esp32-s3-devkitc-1
  *
- * @dependencies LVGL 8.3.x, ArduinoJson, PubSubClient
+ * @dependencies LVGL 8.4.x, ArduinoJson, PubSubClient
  */
 
 #include <Arduino.h>
@@ -76,7 +76,7 @@ static const time_t CLOCK_VALID_AFTER = 1704067200;  // 2024-01-01
 #define MQTT_SOCKET_TIMEOUT_S  5
 
 #ifndef SCREEN_TIMEOUT_MS
-#define SCREEN_TIMEOUT_MS    (10UL * 60UL * 1000UL)  // veille apres 10 min sans toucher ni alerte
+#define SCREEN_TIMEOUT_MS    (10UL * 60UL * 1000UL)  // sans session : veille apres 10 min sans activite
 #endif
 
 static NetworkClientSecure tls;
@@ -85,7 +85,7 @@ static dash::Dashboard dashboard;
 static dash::HostSnapshot incoming;  // ~1 Ko : hors pile
 static bool renderNeeded = false;
 static dash::Alert pendingAlert = dash::Alert::None;
-static uint32_t lastActivityMs = 0;  // dernier toucher, alerte ou demarrage
+static uint32_t lastActivityMs = 0;  // dernier toucher, alerte, fin de la derniere session ou demarrage
 static bool screenOn = true;
 
 static bool clockValid() { return time(nullptr) > CLOCK_VALID_AFTER; }
@@ -314,22 +314,37 @@ static void alertTriggered(dash::Alert a)
                   (unsigned long)(millis() - t0));
 }
 
-// Veille, appelee chaque seconde. Le toucher est lu via l'horodatage d'activite
-// que LVGL tient pour l'indev tactile (alimente meme retroeclairage eteint) :
-// pas de callback a poser sur des objets qui consomment les pressions.
-static void updateScreen()
+// Toucher, lu a chaque tour de loop() (reveil immediat) via l'horodatage
+// d'activite que LVGL tient pour l'indev tactile (lu meme retroeclairage
+// eteint) : pas de callback a poser sur des objets qui consomment les pressions.
+// Seul un toucher recent compte : ms - inactive compare a lastActivityMs
+// deborderait apres ~24,8 j sans toucher.
+#define TOUCH_RECENT_MS 1500
+static void pollTouch()
 {
     bsp_display_lock(0);
     uint32_t inactive = lv_disp_get_inactive_time(nullptr);
     bsp_display_unlock();
-    uint32_t ms = millis();
-    uint32_t touchAt = ms - inactive;
-    if ((int32_t)(touchAt - lastActivityMs) > 0) {  // toucher plus recent (robuste au rebouclage)
+    if (inactive >= TOUCH_RECENT_MS) return;
+    uint32_t touchAt = millis() - inactive;
+    if ((int32_t)(touchAt - lastActivityMs) > 0) {
         lastActivityMs = touchAt;
-        if (!screenOn) setScreen(true, "toucher");
+        setScreen(true, "toucher");
     }
-    bool on = dash::screenShouldBeOn(dashboard.anyWaiting(), ms, lastActivityMs, SCREEN_TIMEOUT_MS);
-    setScreen(on, on ? "session en attente" : "inactif");
+}
+
+// Veille, evaluee chaque seconde.
+static void updateScreen()
+{
+    uint32_t ms = millis();
+    // Disparition de la derniere session : le compte a rebours part de la,
+    // pour ne pas eteindre d'un coup a la fin de la derniere session.
+    static int lastCount = 0;
+    int count = dashboard.sessionCount();
+    if (lastCount > 0 && count == 0) lastActivityMs = ms;
+    lastCount = count;
+    bool on = dash::screenShouldBeOn(count > 0, ms, lastActivityMs, SCREEN_TIMEOUT_MS);
+    setScreen(on, on ? "session listee" : "inactif");
 }
 
 static void handleMqtt(uint32_t ms)
@@ -463,6 +478,8 @@ void loop()
         pendingAlert = dash::Alert::None;
         alertTriggered(a);  // bip synchrone (~0,4 s), hors verrou LVGL
     }
+
+    pollTouch();
 
     static uint32_t lastTick = 0;
     if (ms - lastTick >= 1000) {

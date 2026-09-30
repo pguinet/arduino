@@ -28,7 +28,7 @@ bool beep_begin()
     return ready;
 }
 
-static void writeNote(uint16_t freqHz, uint16_t durationMs, int16_t amp)
+static bool writeNote(uint16_t freqHz, uint16_t durationMs, int16_t amp)
 {
     static int16_t buf[FRAMES * 2];
     const uint32_t total = (uint32_t)RATE * durationMs / 1000;
@@ -46,8 +46,10 @@ static void writeNote(uint16_t freqHz, uint16_t durationMs, int16_t amp)
             buf[2 * f] = v;
             buf[2 * f + 1] = v;
         }
-        i2s.write(reinterpret_cast<uint8_t *>(buf), f * 2 * sizeof(int16_t));
+        // 0 : canal en erreur (timeout 1 s par appel) -> abandon plutot que bloquer.
+        if (i2s.write(reinterpret_cast<uint8_t *>(buf), f * 2 * sizeof(int16_t)) == 0) return false;
     }
+    return true;
 }
 
 void beep_play(const BeepNote *notes, size_t count, uint8_t volume)
@@ -56,7 +58,9 @@ void beep_play(const BeepNote *notes, size_t count, uint8_t volume)
     if (volume > 100) volume = 100;
     if (i2s_channel_enable(i2s.txChan()) != ESP_OK) return;
     const int16_t amp = (int16_t)(32767L * volume / 100);
-    for (size_t i = 0; i < count; i++) writeNote(notes[i].freqHz, notes[i].durationMs, amp);
-    writeNote(0, TAIL_MS, 0);  // la queue remplit le DMA : rien d'audible ne reste en file
+    bool ok = true;
+    for (size_t i = 0; ok && i < count; i++) ok = writeNote(notes[i].freqHz, notes[i].durationMs, amp);
+    if (ok) writeNote(0, TAIL_MS, 0);  // la queue remplit le DMA : rien d'audible ne reste en file
+    else Serial.println("I2S : echec d'ecriture, bip interrompu");
     i2s_channel_disable(i2s.txChan());
 }

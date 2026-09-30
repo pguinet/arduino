@@ -56,7 +56,10 @@ void test_state_labels() {
 
 void test_screen_policy() {
     const uint32_t T = 600000;
+    // au moins une session listee : toujours allume, meme longtemps apres l'activite
     TEST_ASSERT_TRUE(screenShouldBeOn(true, 10 * T, 0));
+    TEST_ASSERT_TRUE(screenShouldBeOn(true, T, 0xFFFFFF00u));
+    // aucune session : extinction apres le timeout depuis la derniere activite
     TEST_ASSERT_TRUE(screenShouldBeOn(false, T - 1, 0));
     TEST_ASSERT_FALSE(screenShouldBeOn(false, T, 0));
     // debordement de millis() (~49 j)

@@ -225,11 +225,10 @@ int64_t Dashboard::staleSeconds(int64_t now) const {
     return worst;
 }
 
-bool Dashboard::anyWaiting() const {
-    for (int h = 0; h < count_; h++)
-        for (int i = 0; i < hosts_[h].snap.count; i++)
-            if (hosts_[h].snap.sessions[i].state != State::Working) return true;
-    return false;
+int Dashboard::sessionCount() const {
+    int n = 0;
+    for (int h = 0; h < count_; h++) n += hosts_[h].snap.count;
+    return n;
 }
 
 // --- Helpers d'affichage et veille ---
@@ -267,9 +266,9 @@ const char *stateLabel(State s) {
 }
 
 // Difference en uint32_t : correcte au debordement de millis() (~49 j).
-bool screenShouldBeOn(bool anyWaiting, uint32_t nowMs, uint32_t lastActivityMs,
+bool screenShouldBeOn(bool hasSessions, uint32_t nowMs, uint32_t lastActivityMs,
                       uint32_t timeoutMs) {
-    return anyWaiting || (uint32_t)(nowMs - lastActivityMs) < timeoutMs;
+    return hasSessions || (uint32_t)(nowMs - lastActivityMs) < timeoutMs;
 }
 
 }  // namespace dash

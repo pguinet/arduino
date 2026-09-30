@@ -76,7 +76,8 @@ public:
     // Age maximal parmi les hotes (0 si aucun) : now - snap.ts, ou now - reception
     // si ts inconnu ; borne a 0.
     int64_t staleSeconds(int64_t now) const;
-    bool anyWaiting() const;
+    // Nombre total de sessions listees (tous hotes, tous etats, perimes compris).
+    int sessionCount() const;
 
 private:
     struct HostEntry {
@@ -92,8 +93,10 @@ void formatDuration(int64_t seconds, char *out, size_t size);  // "0:42", "5:10"
 uint32_t colorForPercent(int pct);  // vert < 60 / orange < 85 / rouge (pct < 0 : vert, a eviter)
 const char *stateLabel(State s);                                // "TRAVAILLE", "ATTENTE", "PERMISSION"
 
-// Veille : ecran allume si une session attend, ou activite recente (ms).
-bool screenShouldBeOn(bool anyWaiting, uint32_t nowMs, uint32_t lastActivityMs,
+// Veille : ecran allume tant qu'au moins une session est listee ; sans session,
+// eteint apres timeoutMs sans activite (toucher, alerte, disparition de la
+// derniere session), mesuree depuis lastActivityMs (robuste au rebouclage).
+bool screenShouldBeOn(bool hasSessions, uint32_t nowMs, uint32_t lastActivityMs,
                       uint32_t timeoutMs = 10UL * 60UL * 1000UL);
 
 }  // namespace dash
