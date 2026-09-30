@@ -27,6 +27,7 @@
 #include "esp_bsp.h"
 #include "lv_port.h"
 #include "credentials.h"
+#include "beep.h"
 #include "dash_model.h"
 #include "ui.h"
 
@@ -74,12 +75,18 @@ static const time_t CLOCK_VALID_AFTER = 1704067200;  // 2024-01-01
 #define TLS_HANDSHAKE_TIMEOUT_S 8
 #define MQTT_SOCKET_TIMEOUT_S  5
 
+#ifndef SCREEN_TIMEOUT_MS
+#define SCREEN_TIMEOUT_MS    (10UL * 60UL * 1000UL)  // veille apres 10 min sans toucher ni alerte
+#endif
+
 static NetworkClientSecure tls;
 static PubSubClient mqtt(tls);
 static dash::Dashboard dashboard;
 static dash::HostSnapshot incoming;  // ~1 Ko : hors pile
 static bool renderNeeded = false;
 static dash::Alert pendingAlert = dash::Alert::None;
+static uint32_t lastActivityMs = 0;  // dernier toucher, alerte ou demarrage
+static bool screenOn = true;
 
 static bool clockValid() { return time(nullptr) > CLOCK_VALID_AFTER; }
 
@@ -281,6 +288,50 @@ static void handleWifi(uint32_t ms)
 static bool mqttUp = false;
 static bool credentialsOk = false;
 
+static void setScreen(bool on, const char *why)
+{
+    if (on == screenOn) return;
+    screenOn = on;
+    if (on) bsp_display_backlight_on();
+    else bsp_display_backlight_off();
+    Serial.printf("Ecran %s (%s)\n", on ? "allume" : "eteint", why);
+}
+
+// Alerte (transition vers attente/permission) : ecran rallume puis bip.
+// dash_model ne leve pas d'alerte pour une session inconnue : pas de bip au
+// demarrage ni au premier snapshot.
+static void alertTriggered(dash::Alert a)
+{
+    static const BeepNote PERMISSION[] = {{1760, 90}, {0, 40}, {1760, 90}};  // deux notes aigues
+    static const BeepNote IDLE[] = {{660, 150}};                             // une note grave
+    lastActivityMs = millis();
+    setScreen(true, "alerte");
+    uint32_t t0 = millis();
+    if (a == dash::Alert::Permission) beep_play(PERMISSION, sizeof PERMISSION / sizeof PERMISSION[0]);
+    else if (a == dash::Alert::Idle) beep_play(IDLE, sizeof IDLE / sizeof IDLE[0]);
+    Serial.printf("Alerte : %s (bip %lu ms)\n",
+                  a == dash::Alert::Permission ? "permission, 2 bips aigus" : "attente, 1 bip grave",
+                  (unsigned long)(millis() - t0));
+}
+
+// Veille, appelee chaque seconde. Le toucher est lu via l'horodatage d'activite
+// que LVGL tient pour l'indev tactile (alimente meme retroeclairage eteint) :
+// pas de callback a poser sur des objets qui consomment les pressions.
+static void updateScreen()
+{
+    bsp_display_lock(0);
+    uint32_t inactive = lv_disp_get_inactive_time(nullptr);
+    bsp_display_unlock();
+    uint32_t ms = millis();
+    uint32_t touchAt = ms - inactive;
+    if ((int32_t)(touchAt - lastActivityMs) > 0) {  // toucher plus recent (robuste au rebouclage)
+        lastActivityMs = touchAt;
+        if (!screenOn) setScreen(true, "toucher");
+    }
+    bool on = dash::screenShouldBeOn(dashboard.anyWaiting(), ms, lastActivityMs, SCREEN_TIMEOUT_MS);
+    setScreen(on, on ? "session en attente" : "inactif");
+}
+
 static void handleMqtt(uint32_t ms)
 {
     static uint32_t lastAttempt = 0;
@@ -352,6 +403,7 @@ void setup()
     };
     bsp_display_start_with_config(&cfg);
     bsp_display_backlight_on();
+    beep_begin();
 
     bsp_display_lock(0);
     ui_create();
@@ -378,6 +430,7 @@ void setup()
     mqtt.setSocketTimeout(MQTT_SOCKET_TIMEOUT_S);
     mqtt.setCallback(onMessage);
 
+    lastActivityMs = millis();
     Serial.println("Setup termine");
 }
 
@@ -406,9 +459,9 @@ void loop()
         bsp_display_unlock();
     }
     if (pendingAlert != dash::Alert::None) {
-        // Task 14 : bip I2S et reveil de l'ecran.
-        Serial.printf("Alerte : %s\n", pendingAlert == dash::Alert::Permission ? "permission" : "attente");
+        dash::Alert a = pendingAlert;
         pendingAlert = dash::Alert::None;
+        alertTriggered(a);  // bip synchrone (~0,4 s), hors verrou LVGL
     }
 
     static uint32_t lastTick = 0;
@@ -417,6 +470,7 @@ void loop()
         bsp_display_lock(0);
         ui_tick(dashboard, time(nullptr), mqttUp);
         bsp_display_unlock();
+        updateScreen();
     }
     delay(20);
 }

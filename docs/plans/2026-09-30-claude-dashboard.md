@@ -3155,105 +3155,54 @@ mqtt.setCallback(onMessage);
 ### Task 14: Bip I2S, réveil et veille de l'écran
 
 **Files:**
-- Create: `$FW/src/beep.h`
-- Create: `$FW/src/beep.cpp`
-- Modify: `$FW/src/main.cpp`
+- Create: `$FW/src/beep.h`, `$FW/src/beep.cpp`
+- Modify: `$FW/src/main.cpp`, `$FW/platformio.ini` (`src/beep.cpp` ajouté à `check_src_filters`)
 
-**Step 1: `beep.h` / `beep.cpp`** (NS4168 : BCK 42, LRCK 2, DOUT 41 ; ESP_I2S d'Arduino 3.0.7)
+**Step 1: `beep.h` / `beep.cpp`** (NS4168 : BCK 42, LRCK 2, DOUT 41, pas de broche d'activation ; ESP_I2S d'Arduino 3.0.7). GPIO 2 n'est utilisé par rien d'autre (rétroéclairage = GPIO 1).
 
 ```cpp
 // beep.h
-#pragma once
-#include <stdint.h>
-void beep_begin();
-void beep_tone(uint16_t freqHz, uint16_t durationMs, uint8_t volume = 40);  // volume 0-100
+#ifndef BEEP_VOLUME
+#define BEEP_VOLUME 35  // 0-100 (% de la pleine echelle)
+#endif
+struct BeepNote { uint16_t freqHz; uint16_t durationMs; };  // freqHz 0 = silence
+bool beep_begin();
+void beep_play(const BeepNote *notes, size_t count, uint8_t volume = BEEP_VOLUME);
 ```
 
-```cpp
-// beep.cpp
-#include "beep.h"
-#include <ESP_I2S.h>
-
-#define I2S_BCK   42
-#define I2S_LRCK  2
-#define I2S_DOUT  41
-#define RATE      16000
-
-static I2SClass i2s;
-static bool ready = false;
-
-void beep_begin() {
-    i2s.setPins(I2S_BCK, I2S_LRCK, I2S_DOUT);
-    ready = i2s.begin(I2S_MODE_STD, RATE, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO);
-    if (!ready) Serial.println("I2S: echec init");
-}
-
-void beep_tone(uint16_t freqHz, uint16_t durationMs, uint8_t volume) {
-    if (!ready || freqHz == 0) return;
-    const int16_t amp = (int16_t)(32767L * volume / 100);
-    const uint32_t half = RATE / (2 * freqHz);
-    const uint32_t total = (uint32_t)RATE * durationMs / 1000;
-    int16_t buf[256];
-    uint32_t n = 0;
-    while (n < total) {
-        size_t chunk = 0;
-        for (; chunk < 256 && n < total; chunk++, n++) {
-            // carre adouci : enveloppe lineaire sur les 5 premieres/dernieres ms
-            uint32_t edge = RATE / 200;
-            int32_t env = n < edge ? n * 1000 / edge
-                        : (total - n) < edge ? (total - n) * 1000 / edge : 1000;
-            int16_t v = ((n / half) & 1) ? amp : -amp;
-            buf[chunk] = (int16_t)((int32_t)v * env / 1000);
-        }
-        i2s.write((uint8_t *)buf, chunk * sizeof(int16_t));
-    }
-    int16_t silence[64] = {0};
-    i2s.write((uint8_t *)silence, sizeof silence);  // evite un "clic" residuel
-}
-```
+- `beep_begin()` : `i2s.setPins(42, 2, 41)` puis `i2s.begin(I2S_MODE_STD, 16000, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO)` (échantillon dupliqué sur les deux canaux : le NS4168 lit celui que choisit sa broche CTRL), puis `i2s_channel_disable(i2s.txChan())`. Échec → « I2S : echec init, bips desactives », bips ignorés.
+- `beep_play()` : `i2s_channel_enable()`, notes en sinus (`sinf`, enveloppe linéaire de 5 ms en début/fin de note : pas de clic), silences écrits dans le flux (pas de `delay()`), queue silencieuse de 100 ms (> tampon DMA de 6 × 240 trames = 90 ms, donc la note est entièrement jouée), puis `i2s_channel_disable()`. Canal désactivé = plus d'horloge : le NS4168 se met en veille, pas de souffle entre deux alertes. `i2s.end()` à chaque bip est évité : ESP_I2S 3.0.7 libère MCLK même inutilisé et journalise `perimanSetPinBus(): Invalid pin: 255` (constaté sur la carte). `write()` est bloquant (timeout Stream 1 s) ; `auto_clear` du DMA émet des zéros en cas de sous-alimentation.
 
 **Step 2: Brancher dans `main.cpp`**
 
 ```cpp
-static uint32_t lastActivityMs = 0;
-static bool screenOn = true;
-
 static void alertTriggered(dash::Alert a) {
+    static const BeepNote PERMISSION[] = {{1760, 90}, {0, 40}, {1760, 90}};  // deux notes aigues
+    static const BeepNote IDLE[] = {{660, 150}};                             // une note grave
     lastActivityMs = millis();
-    if (a == dash::Alert::Permission) {
-        beep_tone(1760, 90); delay(40); beep_tone(1760, 90);   // deux notes aigues
-    } else if (a == dash::Alert::Idle) {
-        beep_tone(660, 150);                                    // une note grave
-    }
+    setScreen(true, "alerte");           // retroeclairage d'abord, puis bip
+    ... beep_play(...) ; Serial "Alerte : permission, 2 bips aigus (bip N ms)"
 }
 ```
 
-- `beep_begin()` dans `setup()` ;
-- toucher : ajouter un callback LVGL sur l'écran (`lv_obj_add_event_cb(lv_scr_act(), onTouch, LV_EVENT_PRESSED, NULL)` + flag `LV_OBJ_FLAG_CLICKABLE`) qui met `lastActivityMs = millis()`. Vérifier dans `lv_port.c` que les pressions arrivent bien quand le rétroéclairage est éteint (le tactile reste alimenté) ; sinon utiliser `lv_disp_get_inactive_time()` à la place du callback ;
-- chaque seconde dans `loop()` :
+- `beep_begin()` dans `setup()` après l'écran ; `lastActivityMs = millis()` en fin de `setup()`.
+- Alerte en attente traitée dans `loop()` hors verrou LVGL (bip synchrone : 330 ms pour permission, 255 ms pour attente, mesurés ; sans risque pour le keepalive MQTT ni le WDT 30 s). dash_model ne lève pas d'alerte pour une session inconnue : pas de bip au démarrage ni au premier snapshot.
+- Toucher : pas de callback LVGL (la liste et les cartes consomment les pressions). `updateScreen()`, appelée chaque seconde après `ui_tick`, lit `lv_disp_get_inactive_time(NULL)` sous verrou : LVGL date l'activité de l'indev tactile, qui reste lu quand le rétroéclairage est éteint (simple PWM LEDC à 0). `touchAt = millis() - inactive` remplace `lastActivityMs` s'il est plus récent (comparaison signée, robuste au rebouclage) ; écran éteint → rallumé (« toucher »). Le premier toucher ne déclenche rien d'autre (pas de bouton ; défilement sans conséquence).
+- Politique : `setScreen(dash::screenShouldBeOn(dashboard.anyWaiting(), ms, lastActivityMs, SCREEN_TIMEOUT_MS), ...)`, `SCREEN_TIMEOUT_MS` = 10 min, surchargeable à la compilation pour les essais (`PLATFORMIO_BUILD_FLAGS="-DSCREEN_TIMEOUT_MS=45000UL"`). `setScreen()` appelle `bsp_display_backlight_on()/off()` et journalise chaque bascule (« Ecran allume (alerte|toucher|session en attente) », « Ecran eteint (inactif) »).
 
-```cpp
-bool on = dash::screenShouldBeOn(dashboard.anyWaiting(), millis(), lastActivityMs);
-if (on != screenOn) {
-    screenOn = on;
-    if (on) bsp_display_backlight_on(); else bsp_display_backlight_off();
-}
-```
+**Step 3: Compiler + upload**, puis scénario sur le système réel : faux fichier de session `~/.claude/dashboard/sessions/test-beep.json` (pid d'un `sleep 600`, écritures atomiques tmp + `mv`, pauses > 3 s), avec un firmware d'essai à 45 s de veille :
+1. `working` → aucun bip (session inconnue) ;
+2. `permission` → « Ecran allume (alerte) », « Alerte : permission, 2 bips aigus », carte rouge en tête ;
+3. `idle` → « Alerte : attente, 1 bip grave » ; réécrire `idle` → aucun bip ;
+4. `working` → « Ecran eteint (inactif) » 45 s après la dernière alerte (si aucune vraie session n'attend) ;
+5. supprimer le faux fichier et tuer le `sleep` (l'agent purge la session), puis reflasher le firmware par défaut (10 min).
 
-- Le premier toucher qui rallume l'écran ne doit pas déclencher d'action (il n'y a pas de bouton, donc sans conséquence ici).
-
-**Step 3: Compiler + upload**, puis scénario manuel avec `mosquitto_pub` (Task 13) :
-1. publier `working`, puis `permission` → deux bips aigus, carte rouge en tête ;
-2. publier `idle` → un bip grave ;
-3. republier le même message → aucun bip ;
-4. tout en `working`, attendre 10 min sans toucher → écran éteint ; toucher → rallumé ; publier `permission` écran éteint → rallumé + bip.
-
-Ajuster le volume si trop fort/faible (paramètre `volume`).
+Le délai réel de 10 min et le réveil au toucher sont à vérifier à la main. Ajuster `BEEP_VOLUME` si trop fort/faible.
 
 **Step 4: Commit**
 
 ```bash
-git add $FW/src
+git add $FW/src $FW/platformio.ini docs/plans/2026-09-30-claude-dashboard.md
 git commit -m "Claude_Dashboard: bip I2S sur attente et veille de l'ecran"
 ```
 
