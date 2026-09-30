@@ -69,6 +69,11 @@ def update_session(base: Path, session_id: str, fn: Callable[[Data], None]) -> N
         _write_atomic(path, data)
 
 
+def session_exists(base: Path, session_id: str) -> bool:
+    _check_id(session_id)
+    return (base / "sessions" / f"{session_id}.json").is_file()
+
+
 def remove_session(base: Path, session_id: str) -> None:
     _check_id(session_id)
     with _locked(base), contextlib.suppress(FileNotFoundError):

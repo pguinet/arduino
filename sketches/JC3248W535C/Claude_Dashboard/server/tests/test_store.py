@@ -61,3 +61,11 @@ def test_concurrent_updates_are_serialized(tmp_path: Path) -> None:
         p.join(timeout=10)
         assert p.exitcode == 0
     assert store.load_sessions(tmp_path) == [{"id": "shared", "n": 200}]
+
+
+def test_session_exists(tmp_path: Path) -> None:
+    assert not store.session_exists(tmp_path, "s1")
+    store.update_session(tmp_path, "s1", lambda d: None)
+    assert store.session_exists(tmp_path, "s1")
+    with pytest.raises(ValueError):
+        store.session_exists(tmp_path, "../x")

@@ -811,7 +811,7 @@ git commit -m "Claude_Dashboard: machine a etats des hooks Claude Code"
 
 Entrée : le JSON que Claude Code passe à la statusline. Champs utilisés : `session_id`, `model.display_name`, `workspace.project_dir|current_dir` (ou `cwd`), `context_window.used_percentage`, `rate_limits.five_hour|seven_day.{used_percentage,resets_at}`. `resets_at` peut être un epoch (int/float) ou une date ISO 8601 : on normalise en epoch.
 
-Projet : même règle que `hook.py` — `workspace.project_dir` prioritaire, sinon `current_dir`/`cwd` seulement si `project` n'est pas encore connu (basename vide ignoré). Tests supplémentaires dans `test_statusline.py` : priorité de `project_dir`, non-écrasement d'un projet existant, repli `cwd`, `main()` silencieux avec code retour 0.
+Projet : même règle que `hook.py` — `workspace.project_dir` prioritaire, sinon `current_dir`/`cwd` seulement si `project` n'est pas encore connu (basename vide ignoré). Le hook fait autorité sur le PID : la statusline ne comble qu'un PID manquant, et sans PID trouvé elle ne crée pas de nouvelle session (seuls les quotas sont écrits ; helper `store.session_exists`). Une date ISO sans fuseau est lue en UTC. Tests supplémentaires dans `test_statusline.py` : priorité de `project_dir`, non-écrasement d'un projet existant, repli `cwd`, `main()` silencieux avec code retour 0 (`find_claude_pid` monkeypatché : PID trouvé, ou absent avec/sans session existante).
 
 **Step 1: Tests**
 
@@ -879,7 +879,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -894,9 +894,12 @@ def parse_epoch(value: Any) -> int | None:
         return int(value)
     if isinstance(value, str):
         try:
-            return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+            dt = datetime.fromisoformat(value)
         except ValueError:
             return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return int(dt.timestamp())
     return None
 
 
@@ -948,6 +951,7 @@ def update_from_statusline(
     if "state" not in data:
         data["state"] = "idle"
         data["since"] = now
+    # le hook fait autorité sur le PID ; la statusline ne comble qu'un PID manquant
     if pid is not None and "pid" not in data:
         data["pid"] = pid
     data["updated"] = now
@@ -967,7 +971,9 @@ def main() -> None:
         def mutate(data: dict[str, Any]) -> None:
             update_from_statusline(data, payload, now, pid)
 
-        store.update_session(base, session_id, mutate)
+        # sans PID, pas de nouvelle session (évite les fantômes, ex. après SessionEnd)
+        if pid is not None or store.session_exists(base, session_id):
+            store.update_session(base, session_id, mutate)
     except Exception as exc:  # la statusline ne doit jamais échouer bruyamment
         print(f"claude-dash-statusline: {exc}", file=sys.stderr)
     sys.exit(0)
@@ -1499,6 +1505,8 @@ git commit -m "Claude_Dashboard: option TLS et environnement de test Mosquitto"
 - Create: `$SRV/config.toml.example`
 - Create: `$SRV/README.md`
 
+La statusline appelle le collecteur au premier plan (`timeout 1`, sans `&`) : lancé en arrière-plan, il est réadopté par `systemd --user` et ne retrouve presque jamais le PID de Claude.
+
 **Step 1: `claude-dash-agent.service`**
 
 ```ini
@@ -1566,7 +1574,7 @@ cat <<EOF
 
 Installation terminee.
 1. Ajoute a ta statusline, juste apres la lecture de stdin (input=\$(cat)) :
-     printf '%s' "\$input" | $BIN/claude-dash-statusline >/dev/null 2>&1 &
+     printf '%s' "\$input" | timeout 1 $BIN/claude-dash-statusline >/dev/null 2>&1
    (sans statusline : voir README pour en creer une minimale)
 2. Pour que l'agent tourne sans session SSH ouverte :
      loginctl enable-linger \$USER
@@ -1585,7 +1593,7 @@ Expected : aucun avertissement (corriger sinon).
 ```bash
 #!/usr/bin/env bash
 input=$(cat)
-printf '%s' "$input" | ~/.local/bin/claude-dash-statusline >/dev/null 2>&1 &
+printf '%s' "$input" | timeout 1 ~/.local/bin/claude-dash-statusline >/dev/null 2>&1
 echo "$input" | jq -r '.model.display_name'
 ```
 

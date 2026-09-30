@@ -1,5 +1,6 @@
 import io
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,16 @@ def test_parse_epoch_variants() -> None:
     assert parse_epoch("garbage") is None
     assert parse_epoch(None) is None
     assert parse_epoch(True) is None
+
+
+def test_parse_epoch_naive_iso_is_utc(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TZ", "Europe/Paris")
+    time.tzset()
+    try:
+        assert parse_epoch("2026-10-01T07:00:00") == 1790838000
+    finally:
+        monkeypatch.undo()
+        time.tzset()
 
 
 def test_extract_limits() -> None:
@@ -101,18 +112,42 @@ def test_cwd_fallback_and_empty_basename_ignored() -> None:
     assert "project" not in d2
 
 
-def test_main_writes_store_silently(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setenv("CLAUDE_DASH_DIR", str(tmp_path))
-    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(SAMPLE)))
+def run_main(monkeypatch: pytest.MonkeyPatch, base: Path, payload: Any, pid: int | None) -> None:
+    monkeypatch.setenv("CLAUDE_DASH_DIR", str(base))
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    monkeypatch.setattr(statusline, "find_claude_pid", lambda start: pid)
     with pytest.raises(SystemExit) as exc:
         statusline.main()
     assert exc.value.code == 0
+
+
+def test_main_writes_store_silently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_main(monkeypatch, tmp_path, SAMPLE, pid=123)
     assert capsys.readouterr().out == ""
     assert store.load_limits(tmp_path)["h5"] == 42
     [session] = store.load_sessions(tmp_path)
     assert session["id"] == "s1" and session["model"] == "Opus 5.5"
+    assert session["pid"] == 123
+
+
+def test_main_without_pid_skips_new_session_but_writes_limits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_main(monkeypatch, tmp_path, SAMPLE, pid=None)
+    assert store.load_limits(tmp_path)["h5"] == 42
+    assert store.load_sessions(tmp_path) == []
+
+
+def test_main_without_pid_updates_existing_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store.update_session(tmp_path, "s1", lambda d: d.update(state="working", pid=77))
+    run_main(monkeypatch, tmp_path, SAMPLE, pid=None)
+    [session] = store.load_sessions(tmp_path)
+    assert session["model"] == "Opus 5.5" and session["pid"] == 77
+    assert session["state"] == "working"
 
 
 def test_main_bad_input_exits_zero(

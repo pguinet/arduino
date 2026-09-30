@@ -6,7 +6,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -15,16 +15,19 @@ from claude_dash.procs import find_claude_pid
 
 
 def parse_epoch(value: Any) -> int | None:
-    """Normalise un epoch (int/float) ou une date ISO 8601 en epoch entier."""
+    """Normalise un epoch (int/float) ou une date ISO 8601 (UTC si sans fuseau)."""
     if isinstance(value, bool):
         return None
     if isinstance(value, int | float):
         return int(value)
     if isinstance(value, str):
         try:
-            return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+            dt = datetime.fromisoformat(value)
         except ValueError:
             return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return int(dt.timestamp())
     return None
 
 
@@ -80,6 +83,7 @@ def update_from_statusline(
     if "state" not in data:
         data["state"] = "idle"
         data["since"] = now
+    # le hook fait autorité sur le PID ; la statusline ne comble qu'un PID manquant
     if pid is not None and "pid" not in data:
         data["pid"] = pid
     data["updated"] = now
@@ -99,7 +103,9 @@ def main() -> None:
         def mutate(data: dict[str, Any]) -> None:
             update_from_statusline(data, payload, now, pid)
 
-        store.update_session(base, session_id, mutate)
+        # sans PID, pas de nouvelle session (évite les fantômes, ex. après SessionEnd)
+        if pid is not None or store.session_exists(base, session_id):
+            store.update_session(base, session_id, mutate)
     except Exception as exc:  # la statusline ne doit jamais échouer bruyamment
         print(f"claude-dash-statusline: {exc}", file=sys.stderr)
     sys.exit(0)
