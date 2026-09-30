@@ -1450,62 +1450,30 @@ git commit -m "Claude_Dashboard: agent MQTT avec throttling et heartbeat"
 
 ### Task 6: Test d'intégration serveur avec Mosquitto (Docker)
 
-But : vérifier la chaîne complète hook → store → agent → broker, sans TLS (Mosquitto local), avant d'y connecter l'ESP32.
+But : vérifier la chaîne complète hook → store → agent → broker, sans TLS (Mosquitto local), avant d'y connecter l'ESP32, y compris les mécanismes de robustesse de la Task 5 (republication forcée après reconnexion).
 
 **Files:**
-- Create: `$SRV/dev/mosquitto.conf`
-- Create: `$SRV/dev/docker-compose.yml`
-- Create: `$SRV/dev/README.md` (commandes ci-dessous)
+- Create: `$SRV/dev/mosquitto.conf` (`listener 1883`, `allow_anonymous true`, sans persistance)
+- Create: `$SRV/dev/docker-compose.yml` (`eclipse-mosquitto:2`, port hôte `${CLAUDE_DASH_MQTT_PORT:-18830}` → 1883)
+- Create: `$SRV/dev/integration-test.sh`
+- Create: `$SRV/dev/README.md`
 
-**Step 1: `dev/mosquitto.conf`**
+**Step 1: `dev/integration-test.sh`** (bash, `set -euo pipefail`)
 
-```
-listener 1883
-allow_anonymous true
-```
-
-**Step 2: `dev/docker-compose.yml`**
-
-```yaml
-services:
-  mosquitto:
-    image: eclipse-mosquitto:2
-    ports: ["1883:1883"]
-    volumes: ["./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro"]
-```
-
-**Step 3: Dérouler le scénario** (dans un conteneur Python, `CLAUDE_DASH_DIR` temporaire)
-
-```bash
-cd $SRV/dev && docker compose up -d
-docker run --rm --network host -v "$PWD/..":/app -w /app python:3.13-slim sh -c '
-  pip install -q --root-user-action=ignore -e . &&
-  export CLAUDE_DASH_DIR=/tmp/dash HOME=/tmp &&
-  mkdir -p /tmp/.config/claude-dash &&
-  printf "[mqtt]\nhost=\"127.0.0.1\"\nport=1883\ntls=false\n[agent]\nhostname=\"test\"\n" > /tmp/.config/claude-dash/config.toml &&
-  chmod 600 /tmp/.config/claude-dash/config.toml &&
-  echo "{\"hook_event_name\":\"SessionStart\",\"session_id\":\"s1\",\"cwd\":\"/x/arduino\"}" | claude-dash-hook &&
-  echo "{\"hook_event_name\":\"Notification\",\"session_id\":\"s1\",\"notification_type\":\"permission_prompt\"}" | claude-dash-hook &&
-  cat /tmp/dash/sessions/s1.json && echo'
-```
-
-Mosquitto local n'a pas de TLS : l'option `tls = true|false` de `[mqtt]` (défaut `true`) existe **déjà depuis la Task 5** (`Config.tls`, `if cfg.tls: client.tls_set(...)`, test `test_tls_can_be_disabled`). La config de test ci-dessus contient donc `tls=false`.
+- Démarre Mosquitto via `docker compose -p claude-dash-it`, attend qu'il réponde.
+- Conteneur `python:3.13-slim` détaché (`--network host`, `--user "$(id -u):$(id -g)"`, `HOME=/tmp`, `CLAUDE_DASH_DIR=/tmp/dash`, `XDG_CONFIG_HOME=/tmp/.config`), `pip install --user -e .`, config `tls = false`, `hostname = "test"` en chmod 600. Hooks via `docker exec`, agent via `docker exec -d` (journal dans `/tmp/agent.log`).
+- Assertions : lecture du retained de `claude-dash/test/state` avec `mosquitto_sub -C 1 -W 2` (image `eclipse-mosquitto:2`), JSON vérifié par `python3` dans le conteneur, en boucle jusqu'à un délai.
+- Scénario : (1) `SessionStart` + `permission_prompt` puis démarrage de l'agent → `s1`/`arduino`/`permission` ; (2) `Stop` → `idle` en ≤ 6 s ; (3) broker arrêté 10 s puis relancé (retained perdu) → republication en ≤ 30 s, donc avant le heartbeat de 60 s ; (4) `SessionEnd` → `sessions` vide.
+- `PASS`/`FAIL` par étape, code de sortie non nul et journal de l'agent en cas d'échec ; `trap` : suppression du conteneur agent et `compose down`.
 
 Note : sans processus `claude`, `find_claude_pid` retourne `None` et la session vit 12 h, ce qui convient ici.
 
-Puis lancer l'agent 5 s et lire le topic :
+**Step 2: Lancer** — `$SRV/dev/integration-test.sh` → `RÉSULTAT : PASS` (~30 s ; republication observée ~5 s après le redémarrage du broker).
+
+**Step 3: Commit**
 
 ```bash
-docker run --rm --network host -v "$PWD/..":/app -w /app python:3.13-slim sh -c '...(même préparation)... ; timeout 5 claude-dash-agent; true' &
-timeout 8 docker run --rm --network host eclipse-mosquitto:2 mosquitto_sub -h 127.0.0.1 -t "claude-dash/#" -v -C 1
-```
-
-Expected : une ligne `claude-dash/test/state {"host":"test","ts":...,"sessions":[{"id":"s1","project":"arduino",...,"state":"permission",...}]}`.
-
-**Step 4: Commit**
-
-```bash
-git add $SRV
+git add $SRV/dev docs/plans/2026-09-30-claude-dashboard.md
 git commit -m "Claude_Dashboard: environnement de test Mosquitto"
 ```
 
