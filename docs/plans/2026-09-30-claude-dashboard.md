@@ -1159,6 +1159,7 @@ port = 8883
 username = "claude-dash-srv"
 password = "..."
 # ca_certs = "/etc/ssl/certs/ca-certificates.crt"   # défaut : CA système
+# tls = true                                         # false pour un Mosquitto local (Task 6)
 topic_prefix = "claude-dash"
 
 [agent]
@@ -1427,6 +1428,14 @@ def main() -> None:
 
 **Step 6: Vérifier** — `$SRV/run-checks.sh` → tout passe.
 
+**Écarts d'implémentation** (le code du dépôt fait foi) :
+- Option `tls` (défaut `true`) ajoutée dès cette tâche au lieu de la Task 6 : `Config.tls`, `if cfg.tls: client.tls_set(...)`, test `test_tls_can_be_disabled`.
+- `load_config` valide les types (port entier 1..65535, `tls` booléen, chaînes) et refuse `/`, `+`, `#` dans `topic_prefix` et `hostname` : toute erreur devient `ConfigError`.
+- Une itération de la boucle est factorisée dans `run_once(base, host, publisher, now_epoch, now_mono, pid_alive)` qui ne lève jamais (`log.exception`) : la purge continue si un id est invalide (`ValueError`), la publication a lieu malgré tout. Tests avec un store `tmp_path` et un faux publisher.
+- `Publisher` n'alerte qu'une fois par panne (puis DEBUG, puis « publication rétablie ») : pas un warning par seconde quand le broker est injoignable.
+- `CallbackAPIVersion` et `MQTTErrorCode` importés de `paho.mqtt.enums` (paho 2.x est typé, mypy strict refuse l'attribut non réexporté).
+- Suivi de `snapshot.py` (commit séparé) : `id` passé par `_text(..., 8, "?")`, horodatages (`since`, `h5_reset`, `d7_reset`) bornés à `0 <= v < 2**32`, sinon 0.
+
 **Step 7: Commit**
 
 ```bash
@@ -1470,14 +1479,14 @@ docker run --rm --network host -v "$PWD/..":/app -w /app python:3.13-slim sh -c 
   pip install -q --root-user-action=ignore -e . &&
   export CLAUDE_DASH_DIR=/tmp/dash HOME=/tmp &&
   mkdir -p /tmp/.config/claude-dash &&
-  printf "[mqtt]\nhost=\"127.0.0.1\"\nport=1883\n[agent]\nhostname=\"test\"\n" > /tmp/.config/claude-dash/config.toml &&
+  printf "[mqtt]\nhost=\"127.0.0.1\"\nport=1883\ntls=false\n[agent]\nhostname=\"test\"\n" > /tmp/.config/claude-dash/config.toml &&
   chmod 600 /tmp/.config/claude-dash/config.toml &&
   echo "{\"hook_event_name\":\"SessionStart\",\"session_id\":\"s1\",\"cwd\":\"/x/arduino\"}" | claude-dash-hook &&
   echo "{\"hook_event_name\":\"Notification\",\"session_id\":\"s1\",\"notification_type\":\"permission_prompt\"}" | claude-dash-hook &&
   cat /tmp/dash/sessions/s1.json && echo'
 ```
 
-Problème attendu : `tls_set()` est inconditionnel et Mosquitto local n'a pas de TLS. **Ajouter** une option `tls = true|false` dans `[mqtt]` (défaut `true`) à `Config`, `load_config` et `_make_client` (`if cfg.tls: client.tls_set(...)`), avec un test `test_tls_can_be_disabled` dans `test_config.py`. Relancer `run-checks.sh`.
+Mosquitto local n'a pas de TLS : l'option `tls = true|false` de `[mqtt]` (défaut `true`) existe **déjà depuis la Task 5** (`Config.tls`, `if cfg.tls: client.tls_set(...)`, test `test_tls_can_be_disabled`). La config de test ci-dessus contient donc `tls=false`.
 
 Note : sans processus `claude`, `find_claude_pid` retourne `None` et la session vit 12 h, ce qui convient ici.
 
@@ -1494,7 +1503,7 @@ Expected : une ligne `claude-dash/test/state {"host":"test","ts":...,"sessions":
 
 ```bash
 git add $SRV
-git commit -m "Claude_Dashboard: option TLS et environnement de test Mosquitto"
+git commit -m "Claude_Dashboard: environnement de test Mosquitto"
 ```
 
 ---
