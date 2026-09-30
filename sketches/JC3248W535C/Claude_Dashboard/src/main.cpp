@@ -65,6 +65,7 @@
 #define MQTT_RETRY_MAX_MS    60000UL
 #define CLOCK_SKEW_WARN_S    30
 #define CLOCK_SKEW_REPEAT_MS (10UL * 60UL * 1000UL)  // un avertissement par hote / 10 min
+#define HOST_MISMATCH_REPEAT_MS (10UL * 60UL * 1000UL)  // un avertissement host != topic / 10 min
 #define TZ_PARIS             "CET-1CEST,M3.5.0,M10.5.0/3"
 static const time_t CLOCK_VALID_AFTER = 1704067200;  // 2024-01-01
 
@@ -195,11 +196,18 @@ static void onMessage(char *topic, byte *payload, unsigned int len)
     }
     if (strcmp(incoming.host, host) != 0) {
         // Les filtres Scaleway limitent chaque serveur a son topic : un host
-        // different dans le payload usurperait un autre serveur.
-        static bool logged = false;
-        if (!logged) {
-            logged = true;
-            Serial.printf("Snapshot ignore : host \"%s\" different du topic %s\n", incoming.host, topic);
+        // different dans le payload usurperait un autre serveur. Compte et
+        // signale au plus toutes les 10 min (le premier tout de suite).
+        static uint32_t mismatches = 0;
+        static uint32_t lastLog = 0;
+        static bool loggedOnce = false;
+        mismatches++;
+        uint32_t ms = millis();
+        if (!loggedOnce || ms - lastLog >= HOST_MISMATCH_REPEAT_MS) {
+            loggedOnce = true;
+            lastLog = ms;
+            Serial.printf("Snapshot ignore : host \"%s\" different du topic %s (%lu depuis le demarrage)\n",
+                          incoming.host, topic, (unsigned long)mismatches);
         }
         return;
     }
@@ -252,7 +260,7 @@ static bool mqttConnect()
         mqtt.disconnect();
         return false;
     }
-    Serial.println("Abonne a " MQTT_TOPIC " (QoS 0) : etat attendu au prochain heartbeat (20 s)");
+    Serial.println("Abonne a " MQTT_TOPIC " (QoS 0) : etat attendu au prochain heartbeat (<= heartbeat de l'agent)");
 
     static bool heapShown = false;
     if (!heapShown) {
