@@ -110,3 +110,123 @@ def test_invalid_default_hostname_asks_for_explicit(
     monkeypatch.setattr(config.socket, "gethostname", lambda: "x" * 40)
     with pytest.raises(ConfigError, match=r"\[agent\] hostname"):
         load_config(write(tmp_path, '[mqtt]\nhost="h"\n'))
+
+
+# --- options Scaleway IoT Hub : client id, mTLS, retain, heartbeat ----------
+
+
+def test_new_options_defaults(tmp_path: Path) -> None:
+    cfg = load_config(write(tmp_path, '[mqtt]\nhost="h"\n[agent]\nhostname="srv"\n'))
+    assert cfg.client_id == "claude-dash-srv"
+    assert cfg.certfile is None and cfg.keyfile is None
+    assert cfg.retain is True
+    assert cfg.heartbeat == 60
+
+
+def test_explicit_client_id(tmp_path: Path) -> None:
+    uuid = "0b7e3c5e-4a9f-4c7d-9a51-2f7f8e0d6b1a"
+    cfg = load_config(write(tmp_path, f'[mqtt]\nhost="h"\nclient_id="{uuid}"\n'))
+    assert cfg.client_id == uuid
+
+
+@pytest.mark.parametrize("value", ['""', '"a b"', '"a\\tb"', f'"{"x" * 65}"', "12"])
+def test_invalid_client_id(tmp_path: Path, value: str) -> None:
+    with pytest.raises(ConfigError, match="client_id"):
+        load_config(write(tmp_path, f'[mqtt]\nhost="h"\nclient_id={value}\n'))
+
+
+def test_client_id_max_length_accepted(tmp_path: Path) -> None:
+    cfg = load_config(write(tmp_path, f'[mqtt]\nhost="h"\nclient_id="{"x" * 64}"\n'))
+    assert cfg.client_id == "x" * 64
+
+
+def cert_pair(tmp_path: Path, key_mode: int = 0o600) -> tuple[Path, Path]:
+    cert = tmp_path / "device.pem"
+    key = tmp_path / "device.key"
+    cert.write_text("cert")
+    key.write_text("key")
+    cert.chmod(0o644)
+    key.chmod(key_mode)
+    return cert, key
+
+
+def test_client_certificate(tmp_path: Path) -> None:
+    cert, key = cert_pair(tmp_path)
+    cfg = load_config(write(tmp_path, f'[mqtt]\nhost="h"\ncertfile="{cert}"\nkeyfile="{key}"\n'))
+    assert (cfg.certfile, cfg.keyfile) == (str(cert), str(key))
+
+
+def test_paths_expand_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cert_pair(tmp_path)
+    cfg = load_config(
+        write(
+            tmp_path,
+            '[mqtt]\nhost="h"\nca_certs="~/ca.pem"\n'
+            'certfile="~/device.pem"\nkeyfile="~/device.key"\n',
+        )
+    )
+    assert cfg.ca_certs == str(tmp_path / "ca.pem")
+    assert cfg.certfile == str(tmp_path / "device.pem")
+    assert cfg.keyfile == str(tmp_path / "device.key")
+
+
+@pytest.mark.parametrize("key", ["certfile", "keyfile"])
+def test_certfile_and_keyfile_go_together(tmp_path: Path, key: str) -> None:
+    cert, keyfile = cert_pair(tmp_path)
+    path = cert if key == "certfile" else keyfile
+    with pytest.raises(ConfigError, match="certfile et keyfile"):
+        load_config(write(tmp_path, f'[mqtt]\nhost="h"\n{key}="{path}"\n'))
+
+
+@pytest.mark.parametrize("missing", ["certfile", "keyfile"])
+def test_client_certificate_files_must_exist(tmp_path: Path, missing: str) -> None:
+    cert, key = cert_pair(tmp_path)
+    (cert if missing == "certfile" else key).unlink()
+    with pytest.raises(ConfigError, match=missing):
+        load_config(write(tmp_path, f'[mqtt]\nhost="h"\ncertfile="{cert}"\nkeyfile="{key}"\n'))
+
+
+@pytest.mark.parametrize("mode", [0o640, 0o604, 0o644])
+def test_keyfile_must_be_private(tmp_path: Path, mode: int) -> None:
+    cert, key = cert_pair(tmp_path, key_mode=mode)
+    with pytest.raises(ConfigError, match="chmod 600"):
+        load_config(write(tmp_path, f'[mqtt]\nhost="h"\ncertfile="{cert}"\nkeyfile="{key}"\n'))
+
+
+def test_keyfile_readonly_owner_accepted(tmp_path: Path) -> None:
+    cert, key = cert_pair(tmp_path, key_mode=0o400)
+    cfg = load_config(write(tmp_path, f'[mqtt]\nhost="h"\ncertfile="{cert}"\nkeyfile="{key}"\n'))
+    assert cfg.keyfile == str(key)
+
+
+def test_client_certificate_requires_tls(tmp_path: Path) -> None:
+    cert, key = cert_pair(tmp_path)
+    with pytest.raises(ConfigError, match="tls"):
+        load_config(
+            write(
+                tmp_path,
+                f'[mqtt]\nhost="h"\ntls=false\ncertfile="{cert}"\nkeyfile="{key}"\n',
+            )
+        )
+
+
+def test_retain_can_be_disabled(tmp_path: Path) -> None:
+    assert load_config(write(tmp_path, '[mqtt]\nhost="h"\nretain=false\n')).retain is False
+
+
+def test_retain_must_be_bool(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="retain"):
+        load_config(write(tmp_path, '[mqtt]\nhost="h"\nretain="no"\n'))
+
+
+@pytest.mark.parametrize("value", [5, 20, 170])
+def test_heartbeat_accepted(tmp_path: Path, value: int) -> None:
+    cfg = load_config(write(tmp_path, f'[mqtt]\nhost="h"\n[agent]\nheartbeat={value}\n'))
+    assert cfg.heartbeat == value
+
+
+@pytest.mark.parametrize("value", ["4", "171", "0", "-1", "true", "20.5", '"20"'])
+def test_heartbeat_rejected(tmp_path: Path, value: str) -> None:
+    with pytest.raises(ConfigError, match="heartbeat"):
+        load_config(write(tmp_path, f'[mqtt]\nhost="h"\n[agent]\nheartbeat={value}\n'))

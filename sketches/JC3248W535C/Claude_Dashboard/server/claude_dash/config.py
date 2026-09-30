@@ -13,6 +13,9 @@ from typing import Any
 
 _TOPIC_FORBIDDEN = set("/+#\0")
 _HOSTNAME = re.compile(r"[A-Za-z0-9._-]{1,32}")
+_CLIENT_ID = re.compile(r"\S{1,64}")
+# L'écran juge un serveur injoignable après 180 s sans message : marge de 10 s.
+HEARTBEAT_RANGE = (5, 170)
 
 
 class ConfigError(Exception):
@@ -29,6 +32,11 @@ class Config:
     tls: bool
     topic_prefix: str
     hostname: str
+    client_id: str
+    certfile: str | None
+    keyfile: str | None
+    retain: bool
+    heartbeat: int
 
     @property
     def topic(self) -> str:
@@ -69,6 +77,54 @@ def _hostname(agent: dict[str, Any]) -> str:
     return short
 
 
+def _opt_bool(section: dict[str, Any], key: str, default: bool) -> bool:
+    value = section.get(key, default)
+    if not isinstance(value, bool):
+        raise ConfigError(f"{key} doit valoir true ou false")
+    return value
+
+
+def _opt_path(section: dict[str, Any], key: str) -> str | None:
+    value = _opt_str(section, key)
+    return None if value is None else os.path.expanduser(value)
+
+
+def _client_id(mqtt: dict[str, Any], hostname: str) -> str:
+    """Client id MQTT : explicite (ex. Device ID Scaleway), sinon claude-dash-<hostname>."""
+    value = mqtt.get("client_id")
+    if value is None:
+        return f"claude-dash-{hostname}"
+    if not isinstance(value, str) or not _CLIENT_ID.fullmatch(value):
+        raise ConfigError(f"client_id invalide (non vide, sans espace, 64 max): {value!r}")
+    return value
+
+
+def _client_cert(mqtt: dict[str, Any], tls: bool) -> tuple[str | None, str | None]:
+    """Certificat client (mTLS) : certfile et keyfile ensemble, clé privée en chmod 600."""
+    certfile, keyfile = _opt_path(mqtt, "certfile"), _opt_path(mqtt, "keyfile")
+    if certfile is None and keyfile is None:
+        return None, None
+    if certfile is None or keyfile is None:
+        raise ConfigError("certfile et keyfile doivent être renseignés ensemble")
+    if not tls:
+        raise ConfigError("certfile/keyfile exigent tls = true")
+    for key, value in (("certfile", certfile), ("keyfile", keyfile)):
+        if not Path(value).is_file():
+            raise ConfigError(f"{key} introuvable: {value}")
+    mode = stat.S_IMODE(Path(keyfile).stat().st_mode)
+    if mode & 0o077:
+        raise ConfigError(f"keyfile {keyfile} doit être en chmod 600 (actuel {mode:o})")
+    return certfile, keyfile
+
+
+def _heartbeat(agent: dict[str, Any]) -> int:
+    value = agent.get("heartbeat", 60)
+    low, high = HEARTBEAT_RANGE
+    if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
+        raise ConfigError(f"[agent] heartbeat invalide (entier {low}..{high} s): {value!r}")
+    return value
+
+
 def load_config(path: Path) -> Config:
     try:
         mode = stat.S_IMODE(path.stat().st_mode)
@@ -88,19 +144,24 @@ def load_config(path: Path) -> Config:
         port = mqtt.get("port", 8883)
         if not isinstance(port, int) or isinstance(port, bool) or not 0 < port < 65536:
             raise ConfigError(f"port invalide: {port!r}")
-        tls = mqtt.get("tls", True)
-        if not isinstance(tls, bool):
-            raise ConfigError("tls doit valoir true ou false")
+        tls = _opt_bool(mqtt, "tls", True)
         prefix = _opt_str(mqtt, "topic_prefix") or "claude-dash"
+        hostname = _hostname(agent)
+        certfile, keyfile = _client_cert(mqtt, tls)
         return Config(
             host=host,
             port=port,
             username=_opt_str(mqtt, "username"),
             password=_opt_str(mqtt, "password"),
-            ca_certs=_opt_str(mqtt, "ca_certs"),
+            ca_certs=_opt_path(mqtt, "ca_certs"),
             tls=tls,
             topic_prefix=_topic_prefix(prefix),
-            hostname=_hostname(agent),
+            hostname=hostname,
+            client_id=_client_id(mqtt, hostname),
+            certfile=certfile,
+            keyfile=keyfile,
+            retain=_opt_bool(mqtt, "retain", True),
+            heartbeat=_heartbeat(agent),
         )
     except ConfigError as exc:
         raise ConfigError(f"{path}: {exc}") from None

@@ -150,9 +150,10 @@ def on_connect_callback(connected: threading.Event) -> Callable[..., None]:
 
 
 def _make_client(cfg: Config, connected: threading.Event) -> mqtt.Client:
-    client = mqtt.Client(CallbackAPIVersion.VERSION2, client_id=f"claude-dash-{cfg.hostname}")
+    client = mqtt.Client(CallbackAPIVersion.VERSION2, client_id=cfg.client_id)
     if cfg.tls:
-        client.tls_set(ca_certs=cfg.ca_certs)
+        # certfile/keyfile : authentification mTLS (Scaleway IoT Hub), sinon None
+        client.tls_set(ca_certs=cfg.ca_certs, certfile=cfg.certfile, keyfile=cfg.keyfile)
     if cfg.username:
         client.username_pw_set(cfg.username, cfg.password)
     client.reconnect_delay_set(min_delay=1, max_delay=60)
@@ -164,17 +165,26 @@ def _make_client(cfg: Config, connected: threading.Event) -> mqtt.Client:
     return client
 
 
-def run(cfg: Config, client: mqtt.Client, connected: threading.Event) -> None:
-    base = store.default_base()
+def make_sender(client: Any, cfg: Config) -> Callable[[str], None]:
+    """Fonction d'envoi du snapshot (QoS 1, retained si le broker le permet)."""
 
     def send(payload: str) -> None:
         if not client.is_connected():
             raise OSError("MQTT non connecté")
-        info = client.publish(cfg.topic, payload, qos=1, retain=True)
+        info = client.publish(cfg.topic, payload, qos=1, retain=cfg.retain)
         if info.rc != MQTTErrorCode.MQTT_ERR_SUCCESS:
             raise OSError(f"publish rc={info.rc}")
 
-    publisher = Publisher(send)
+    return send
+
+
+def make_publisher(send: Callable[[str], None], cfg: Config) -> Publisher:
+    return Publisher(send, min_interval=2, heartbeat=cfg.heartbeat)
+
+
+def run(cfg: Config, client: mqtt.Client, connected: threading.Event) -> None:
+    base = store.default_base()
+    publisher = make_publisher(make_sender(client, cfg), cfg)
     outage = Outage("agent rétabli")
     stop = False
 
@@ -184,7 +194,13 @@ def run(cfg: Config, client: mqtt.Client, connected: threading.Event) -> None:
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
-    log.info("agent démarré, topic %s", cfg.topic)
+    log.info(
+        "agent démarré, topic %s (client id %s, retain=%s, heartbeat %s s)",
+        cfg.topic,
+        cfg.client_id,
+        cfg.retain,
+        cfg.heartbeat,
+    )
     while not stop:
         if connected.is_set():
             connected.clear()
@@ -207,11 +223,12 @@ def main() -> None:
         client = _make_client(cfg, connected)
     except (OSError, ssl.SSLError, ValueError) as exc:
         log.error(
-            "client MQTT impossible à initialiser (%s:%s, tls=%s, ca_certs=%s): %s",
+            "client MQTT impossible à initialiser (%s:%s, tls=%s, ca_certs=%s, certfile=%s): %s",
             cfg.host,
             cfg.port,
             cfg.tls,
             cfg.ca_certs,
+            cfg.certfile,
             exc,
         )
         sys.exit(2)

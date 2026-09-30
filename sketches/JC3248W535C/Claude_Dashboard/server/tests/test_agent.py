@@ -6,8 +6,16 @@ from typing import Any
 
 import pytest
 
-from claude_dash import store
-from claude_dash.agent import Outage, Publisher, main, on_connect_callback, run_once
+from claude_dash import agent, store
+from claude_dash.agent import (
+    Outage,
+    Publisher,
+    main,
+    make_sender,
+    on_connect_callback,
+    run_once,
+)
+from claude_dash.config import Config
 
 NOW = 1_000_000
 
@@ -290,3 +298,133 @@ def test_main_exits_2_on_bad_ca_file(
         main()
     assert exc.value.code == 2
     assert "ca.pem" in caplog.text
+
+
+# --- paramètres du client MQTT dérivés de la config ------------------------
+
+
+def make_cfg(**overrides: Any) -> Config:
+    fields: dict[str, Any] = {
+        "host": "iot.example",
+        "port": 8883,
+        "username": None,
+        "password": None,
+        "ca_certs": "/ca.pem",
+        "tls": True,
+        "topic_prefix": "claude-dash",
+        "hostname": "srv",
+        "client_id": "claude-dash-srv",
+        "certfile": None,
+        "keyfile": None,
+        "retain": True,
+        "heartbeat": 60,
+    }
+    fields.update(overrides)
+    return Config(**fields)
+
+
+class FakeClient:
+    """Enregistre les appels faits par l'agent au client paho."""
+
+    instances: list["FakeClient"] = []
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.init_kwargs = kwargs
+        self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+        self.connected = True
+        self.rc = 0
+        FakeClient.instances.append(self)
+
+    def __getattr__(self, name: str) -> Any:
+        def record(*args: Any, **kwargs: Any) -> Any:
+            self.calls.append((name, args, kwargs))
+            return type("Info", (), {"rc": self.rc})()
+
+        return record
+
+    def is_connected(self) -> bool:
+        return self.connected
+
+    def called(self, name: str) -> list[tuple[tuple[Any, ...], dict[str, Any]]]:
+        return [(a, k) for n, a, k in self.calls if n == name]
+
+
+@pytest.fixture
+def fake_client(monkeypatch: pytest.MonkeyPatch) -> type[FakeClient]:
+    FakeClient.instances = []
+    monkeypatch.setattr(agent.mqtt, "Client", FakeClient)
+    return FakeClient
+
+
+def test_client_uses_configured_id_and_mtls(fake_client: type[FakeClient]) -> None:
+    uuid = "0b7e3c5e-4a9f-4c7d-9a51-2f7f8e0d6b1a"
+    cfg = make_cfg(client_id=uuid, certfile="/d.pem", keyfile="/d.key")
+    agent._make_client(cfg, threading.Event())
+    client = fake_client.instances[0]
+    assert client.init_kwargs["client_id"] == uuid
+    assert client.called("tls_set") == [
+        ((), {"ca_certs": "/ca.pem", "certfile": "/d.pem", "keyfile": "/d.key"})
+    ]
+    assert client.called("username_pw_set") == []
+    assert client.called("connect_async") == [(("iot.example", 8883), {"keepalive": 60})]
+
+
+def test_client_without_tls_skips_tls_set(fake_client: type[FakeClient]) -> None:
+    agent._make_client(make_cfg(tls=False, username="u", password="p"), threading.Event())
+    client = fake_client.instances[0]
+    assert client.called("tls_set") == []
+    assert client.called("username_pw_set") == [(("u", "p"), {})]
+
+
+@pytest.mark.parametrize("retain", [True, False])
+def test_sender_publishes_with_configured_retain(retain: bool) -> None:
+    client = FakeClient()
+    make_sender(client, make_cfg(retain=retain))("{}")
+    assert client.called("publish") == [
+        (("claude-dash/srv/state", "{}"), {"qos": 1, "retain": retain})
+    ]
+
+
+def test_sender_raises_when_disconnected() -> None:
+    client = FakeClient()
+    client.connected = False
+    with pytest.raises(OSError, match="non connecté"):
+        make_sender(client, make_cfg())("{}")
+    assert client.called("publish") == []
+
+
+def test_sender_raises_on_publish_error() -> None:
+    client = FakeClient()
+    client.rc = 4
+    with pytest.raises(OSError, match="rc="):
+        make_sender(client, make_cfg())("{}")
+
+
+def test_publisher_uses_configured_heartbeat() -> None:
+    sent: list[str] = []
+    pub = agent.make_publisher(sent.append, make_cfg(heartbeat=20))
+    pub.tick(snap(0), now=0.0)
+    assert not pub.tick(snap(19), now=19.0)
+    assert pub.tick(snap(20), now=20.0)
+    assert not pub.tick(snap(21, "working"), now=21.0)  # min_interval reste 2 s
+
+
+def test_main_exits_2_on_invalid_client_certificate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    cfg_dir = tmp_path / "claude-dash"
+    cfg_dir.mkdir()
+    (cfg_dir / "device.pem").write_text("pas un certificat")
+    (cfg_dir / "device.key").write_text("pas une clé")
+    (cfg_dir / "device.key").chmod(0o600)
+    cfg = cfg_dir / "config.toml"
+    cfg.write_text(
+        f'[mqtt]\nhost="127.0.0.1"\ncertfile="{cfg_dir}/device.pem"\n'
+        f'keyfile="{cfg_dir}/device.key"\n'
+    )
+    cfg.chmod(0o600)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 2
+    assert "device.pem" in caplog.text
