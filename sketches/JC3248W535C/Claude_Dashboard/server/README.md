@@ -168,7 +168,9 @@ heartbeat = 20
 - Options de `[mqtt]` : `client_id` (défaut `claude-dash-<hostname>`, sans espace,
   64 max ; **obligatoire** sur Scaleway : le Device ID), `certfile` + `keyfile`
   (certificat client mTLS, les deux ensemble, `tls = true` obligatoire, clé non
-  chiffrée), `retain` (défaut `true` ; `false` sur Scaleway). `[agent] heartbeat` :
+  chiffrée), `retain` (défaut `true` ; `false` sur Scaleway), `transport` (`"tcp"`
+  par défaut ; `"websockets"` avec `port = 443` quand un pare-feu filtre le 8883
+  sortant : même certificat, même Device ID). `[agent] heartbeat` :
   republication minimale en secondes (défaut 60, 20 dans l'exemple, de 5 à 170 pour
   rester sous le seuil de 180 s au-delà duquel l'écran affiche « Serveur
   injoignable »). `~` est développé dans `ca_certs`, `certfile` et `keyfile`.
@@ -337,6 +339,8 @@ ls ~/.claude/dashboard/sessions/        # état brut des sessions
 - `connexion MQTT impossible à …` (WARNING, une fois par panne) : réseau, CA,
   certificat client refusé ou client id déjà utilisé ; « connexion MQTT rétablie »
   au retour.
+  Port filtré ? `timeout 5 bash -c '</dev/tcp/iot.fr-par.scw.cloud/8883'` : s'il
+  échoue et que le 443 répond, passe en `transport = "websockets"` et `port = 443`.
 - Rien dans le journal après un redémarrage de session SSH : `loginctl enable-linger`.
 - Session fantôme sur l'écran : elle disparaît dès que le processus `claude` est
   mort (vérifié chaque seconde).
