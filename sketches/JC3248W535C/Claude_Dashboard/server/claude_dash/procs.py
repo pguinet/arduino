@@ -37,13 +37,14 @@ def proc_info(pid: int) -> tuple[int, str, list[str]] | None:
 
 
 def is_claude(comm: str, argv: list[str]) -> bool:
-    """Vrai pour le binaire natif `claude` ou `node .../@anthropic-ai/claude-code/cli.js`."""
+    """Vrai pour le binaire natif `claude`, `node .../@anthropic-ai/claude-code/cli.js`
+    ou `node .../claude` (lien npm lancé via `#!/usr/bin/env node`)."""
     if comm == "claude":
         return True
     return (
         len(argv) >= 2
         and os.path.basename(argv[0]).startswith("node")
-        and argv[1].endswith(_CLAUDE_CLI_SUFFIX)
+        and (argv[1].endswith(_CLAUDE_CLI_SUFFIX) or os.path.basename(argv[1]) == "claude")
     )
 
 

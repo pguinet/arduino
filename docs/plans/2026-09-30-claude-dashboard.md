@@ -809,7 +809,9 @@ git commit -m "Claude_Dashboard: machine a etats des hooks Claude Code"
 - Create: `$SRV/claude_dash/statusline.py`
 - Test: `$SRV/tests/test_statusline.py`
 
-Entrée : le JSON que Claude Code passe à la statusline. Champs utilisés : `session_id`, `model.display_name`, `workspace.current_dir`, `context_window.used_percentage`, `rate_limits.five_hour|seven_day.{used_percentage,resets_at}`. `resets_at` peut être un epoch (int/float) ou une date ISO 8601 : on normalise en epoch.
+Entrée : le JSON que Claude Code passe à la statusline. Champs utilisés : `session_id`, `model.display_name`, `workspace.project_dir|current_dir` (ou `cwd`), `context_window.used_percentage`, `rate_limits.five_hour|seven_day.{used_percentage,resets_at}`. `resets_at` peut être un epoch (int/float) ou une date ISO 8601 : on normalise en epoch.
+
+Projet : même règle que `hook.py` — `workspace.project_dir` prioritaire, sinon `current_dir`/`cwd` seulement si `project` n'est pas encore connu (basename vide ignoré). Tests supplémentaires dans `test_statusline.py` : priorité de `project_dir`, non-écrasement d'un projet existant, repli `cwd`, `main()` silencieux avec code retour 0.
 
 **Step 1: Tests**
 
@@ -862,7 +864,7 @@ def test_update_keeps_existing_state() -> None:
     assert d["state"] == "working" and d["since"] == 3 and d["pid"] == 4
 ```
 
-(Vérifier `1790838000` = 2026-10-01T07:00:00Z avec `date -d @1790838000 -u` et ajuster la constante si besoin.)
+(`1790838000` = 2026-10-01T07:00:00Z, vérifié avec `date -d @1790838000 -u`.)
 
 **Step 2: Vérifier l'échec** — `$SRV/run-checks.sh tests/test_statusline.py` → FAIL.
 
@@ -904,6 +906,10 @@ def _pct(value: Any) -> int | None:
     return None
 
 
+def _basename(path: Any) -> str:
+    return PurePosixPath(str(path)).name if path else ""
+
+
 def extract_limits(payload: dict[str, Any], now: int) -> dict[str, Any] | None:
     rl = payload.get("rate_limits")
     if not isinstance(rl, dict):
@@ -933,9 +939,12 @@ def update_from_statusline(
     if isinstance(ctx, dict) and (pct := _pct(ctx.get("used_percentage"))) is not None:
         data["ctx"] = pct
     ws = payload.get("workspace")
-    cwd = ws.get("current_dir") if isinstance(ws, dict) else payload.get("cwd")
-    if cwd:
-        data["project"] = PurePosixPath(str(cwd)).name
+    ws = ws if isinstance(ws, dict) else {}
+    project = _basename(ws.get("project_dir"))
+    if not project and "project" not in data:
+        project = _basename(ws.get("current_dir") or payload.get("cwd"))
+    if project:
+        data["project"] = project
     if "state" not in data:
         data["state"] = "idle"
         data["since"] = now
@@ -954,10 +963,12 @@ def main() -> None:
             store.write_limits(base, limits)
         session_id = str(payload["session_id"])
         pid = find_claude_pid(os.getpid())
-        store.update_session(
-            base, session_id, lambda d: update_from_statusline(d, payload, now, pid)
-        )
-    except Exception as exc:  # noqa: BLE001
+
+        def mutate(data: dict[str, Any]) -> None:
+            update_from_statusline(data, payload, now, pid)
+
+        store.update_session(base, session_id, mutate)
+    except Exception as exc:  # la statusline ne doit jamais échouer bruyamment
         print(f"claude-dash-statusline: {exc}", file=sys.stderr)
     sys.exit(0)
 ```

@@ -23,6 +23,15 @@ def test_node_process_with_claude_cmdline() -> None:
     assert find_claude_pid(300, lambda p: tree.get(p)) == 200
 
 
+def test_node_running_claude_symlink() -> None:
+    # installation npm : `claude` est un lien vers cli.js lancé via `#!/usr/bin/env node`
+    tree: dict[int, Entry] = {
+        300: (200, "sh", ["sh"]),
+        200: (1, "node", ["node", "/usr/local/bin/claude", "--resume"]),
+    }
+    assert find_claude_pid(300, lambda p: tree.get(p)) == 200
+
+
 def test_none_when_not_found() -> None:
     tree: dict[int, Entry] = {300: (1, "sh", ["sh"])}
     assert find_claude_pid(300, lambda p: tree.get(p)) is None
