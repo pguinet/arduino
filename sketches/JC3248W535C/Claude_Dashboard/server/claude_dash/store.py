@@ -22,7 +22,7 @@ def default_base() -> Path:
 
 
 def _check_id(session_id: str) -> None:
-    if not _SAFE_ID.match(session_id):
+    if not _SAFE_ID.fullmatch(session_id):
         raise ValueError(f"session id invalide: {session_id!r}")
 
 
