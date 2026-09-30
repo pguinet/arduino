@@ -68,6 +68,53 @@ def test_idle_notification_does_not_change_state() -> None:
     assert d["since"] == 100
 
 
+def test_idle_prompt_after_permission_is_idle() -> None:
+    # Esc sur une demande de permission : aucun Stop, seul idle_prompt arrive
+    d: dict[str, Any] = {"state": "permission", "since": 110, "tool": "Bash"}
+    apply_event(d, ev("Notification", notification_type="idle_prompt"), now=200, pid=1)
+    assert d["state"] == "idle"
+    assert d["since"] == 200
+    assert "tool" not in d
+
+
+def test_session_start_compact_keeps_state() -> None:
+    d: dict[str, Any] = {"state": "working", "since": 100, "tool": "Bash"}
+    apply_event(d, ev("SessionStart", source="compact"), now=150, pid=1)
+    assert d["state"] == "working"
+    assert d["since"] == 100
+
+
+def test_session_start_compact_without_state_is_idle() -> None:
+    d: dict[str, Any] = {}
+    apply_event(d, ev("SessionStart", source="compact"), now=150, pid=1)
+    assert d["state"] == "idle"
+
+
+def test_session_start_resume_resets_to_idle() -> None:
+    d: dict[str, Any] = {"state": "working", "since": 100}
+    apply_event(d, ev("SessionStart", source="resume"), now=150, pid=1)
+    assert d["state"] == "idle"
+
+
+def test_project_dir_takes_precedence_over_cwd() -> None:
+    d: dict[str, Any] = {"project": "old"}
+    apply_event(d, ev("PreToolUse"), now=1, pid=1, project_dir="/home/u/dev/dashboard")
+    assert d["project"] == "dashboard"
+
+
+def test_project_from_cwd_only_when_unset() -> None:
+    d: dict[str, Any] = {}
+    apply_event(d, ev("SessionStart"), now=1, pid=1)
+    apply_event(d, {**ev("PreToolUse"), "cwd": "/tmp/elsewhere"}, now=2, pid=1)
+    assert d["project"] == "arduino"
+
+
+def test_empty_basename_ignored() -> None:
+    d: dict[str, Any] = {}
+    apply_event(d, {**ev("SessionStart"), "cwd": "/"}, now=1, pid=1, project_dir="/")
+    assert "project" not in d
+
+
 def test_post_tool_use_after_permission_is_working() -> None:
     d: dict[str, Any] = {"state": "permission", "since": 110, "tool": "Bash"}
     apply_event(d, ev("PostToolUse", tool_name="Bash"), now=120, pid=1)
@@ -97,8 +144,14 @@ def test_pid_not_overwritten_by_none() -> None:
     assert d["pid"] == 42
 
 
-def _run_main(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stdin: str) -> int | str | None:
+def _run_main(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stdin: str, project_dir: str | None = None
+) -> int | str | None:
     monkeypatch.setenv("CLAUDE_DASH_DIR", str(tmp_path))
+    if project_dir is None:
+        monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    else:
+        monkeypatch.setenv("CLAUDE_PROJECT_DIR", project_dir)
     monkeypatch.setattr("sys.stdin", io.StringIO(stdin))
     with pytest.raises(SystemExit) as exc:
         hook.main()
@@ -111,6 +164,12 @@ def test_main_session_start_creates_file(monkeypatch: pytest.MonkeyPatch, tmp_pa
     data = json.loads((tmp_path / "sessions" / "s1.json").read_text())
     assert data["state"] == "idle"
     assert data["project"] == "arduino"
+
+
+def test_main_uses_claude_project_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _run_main(monkeypatch, tmp_path, json.dumps(ev("SessionStart")), "/home/u/dev/dashboard")
+    data = json.loads((tmp_path / "sessions" / "s1.json").read_text())
+    assert data["project"] == "dashboard"
 
 
 def test_main_session_end_removes_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

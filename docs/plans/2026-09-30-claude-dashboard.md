@@ -13,7 +13,7 @@
 **Écarts assumés par rapport au design :**
 - L'agent scrute le dossier toutes les secondes (stdlib) au lieu d'inotify : pas de dépendance, comportement identique à l'échelle humaine.
 - `dash_model` vit dans `lib/dash_model/` (et non `src/`) pour que PlatformIO le compile aussi dans l'env `native` sans tirer `main.cpp`.
-- Le hook `PostToolUse` est ajouté : après une permission accordée, il remet la session en `working` pendant l'exécution de l'outil.
+- Le hook `PostToolUse` est ajouté : il se déclenche APRÈS l'exécution de l'outil et remet la session en `working` une fois l'outil approuvé terminé. Pendant un outil approuvé long, la carte reste sur `permission` : limitation acceptée, aucun hook ne se déclenche au moment de l'approbation.
 
 **Conventions :**
 - Chemins relatifs à la racine du repo `/home/pascal/github/arduino`.
@@ -318,13 +318,19 @@ git commit -m "Claude_Dashboard: stockage atomique des sessions cote serveur"
 - Test: `$SRV/tests/test_hook.py`
 - Test: `$SRV/tests/test_procs.py`
 
-Entrée des hooks (stdin, JSON) : champs communs `session_id`, `cwd`, `hook_event_name` ; `PreToolUse`/`PostToolUse` ont `tool_name` ; `Notification` a `message` et `notification_type` (`permission_prompt`, `idle_prompt`, …).
+Entrée des hooks (stdin, JSON) : champs communs `session_id`, `cwd`, `hook_event_name` ; `PreToolUse`/`PostToolUse` ont `tool_name` ; `SessionStart` a `source` (`startup`, `resume`, `clear`, `compact`) ; `Notification` a `message` et `notification_type` (`permission_prompt`, `idle_prompt`, …).
 
 **Step 1: Tests de la machine à états (fonction pure)**
 
 ```python
+import io
+import json
+from pathlib import Path
 from typing import Any
 
+import pytest
+
+from claude_dash import hook
 from claude_dash.hook import apply_event
 
 
@@ -349,25 +355,89 @@ def test_prompt_then_tool_is_working_with_tool() -> None:
 
 def test_permission_prompt() -> None:
     d: dict[str, Any] = {"state": "working", "since": 100}
-    apply_event(d, ev("Notification", notification_type="permission_prompt",
-                      message="Claude needs your permission to use Bash"), now=110, pid=1)
+    apply_event(
+        d,
+        ev(
+            "Notification",
+            notification_type="permission_prompt",
+            message="Claude needs your permission to use Bash",
+        ),
+        now=110,
+        pid=1,
+    )
     assert d["state"] == "permission"
     assert d["since"] == 110
 
 
 def test_permission_fallback_on_message_without_type() -> None:
     d: dict[str, Any] = {"state": "working", "since": 100}
-    apply_event(d, ev("Notification", message="Claude needs your permission to use Bash"),
-                now=110, pid=1)
+    apply_event(
+        d, ev("Notification", message="Claude needs your permission to use Bash"), now=110, pid=1
+    )
     assert d["state"] == "permission"
 
 
 def test_idle_notification_does_not_change_state() -> None:
     d: dict[str, Any] = {"state": "idle", "since": 100}
-    apply_event(d, ev("Notification", notification_type="idle_prompt",
-                      message="Claude is waiting for your input"), now=200, pid=1)
+    apply_event(
+        d,
+        ev(
+            "Notification",
+            notification_type="idle_prompt",
+            message="Claude is waiting for your input",
+        ),
+        now=200,
+        pid=1,
+    )
     assert d["state"] == "idle"
     assert d["since"] == 100
+
+
+def test_idle_prompt_after_permission_is_idle() -> None:
+    # Esc sur une demande de permission : aucun Stop, seul idle_prompt arrive
+    d: dict[str, Any] = {"state": "permission", "since": 110, "tool": "Bash"}
+    apply_event(d, ev("Notification", notification_type="idle_prompt"), now=200, pid=1)
+    assert d["state"] == "idle"
+    assert d["since"] == 200
+    assert "tool" not in d
+
+
+def test_session_start_compact_keeps_state() -> None:
+    d: dict[str, Any] = {"state": "working", "since": 100, "tool": "Bash"}
+    apply_event(d, ev("SessionStart", source="compact"), now=150, pid=1)
+    assert d["state"] == "working"
+    assert d["since"] == 100
+
+
+def test_session_start_compact_without_state_is_idle() -> None:
+    d: dict[str, Any] = {}
+    apply_event(d, ev("SessionStart", source="compact"), now=150, pid=1)
+    assert d["state"] == "idle"
+
+
+def test_session_start_resume_resets_to_idle() -> None:
+    d: dict[str, Any] = {"state": "working", "since": 100}
+    apply_event(d, ev("SessionStart", source="resume"), now=150, pid=1)
+    assert d["state"] == "idle"
+
+
+def test_project_dir_takes_precedence_over_cwd() -> None:
+    d: dict[str, Any] = {"project": "old"}
+    apply_event(d, ev("PreToolUse"), now=1, pid=1, project_dir="/home/u/dev/dashboard")
+    assert d["project"] == "dashboard"
+
+
+def test_project_from_cwd_only_when_unset() -> None:
+    d: dict[str, Any] = {}
+    apply_event(d, ev("SessionStart"), now=1, pid=1)
+    apply_event(d, {**ev("PreToolUse"), "cwd": "/tmp/elsewhere"}, now=2, pid=1)
+    assert d["project"] == "arduino"
+
+
+def test_empty_basename_ignored() -> None:
+    d: dict[str, Any] = {}
+    apply_event(d, {**ev("SessionStart"), "cwd": "/"}, now=1, pid=1, project_dir="/")
+    assert "project" not in d
 
 
 def test_post_tool_use_after_permission_is_working() -> None:
@@ -397,27 +467,124 @@ def test_pid_not_overwritten_by_none() -> None:
     d: dict[str, Any] = {"pid": 42}
     apply_event(d, ev("Stop"), now=1, pid=None)
     assert d["pid"] == 42
+
+
+def _run_main(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stdin: str, project_dir: str | None = None
+) -> int | str | None:
+    monkeypatch.setenv("CLAUDE_DASH_DIR", str(tmp_path))
+    if project_dir is None:
+        monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    else:
+        monkeypatch.setenv("CLAUDE_PROJECT_DIR", project_dir)
+    monkeypatch.setattr("sys.stdin", io.StringIO(stdin))
+    with pytest.raises(SystemExit) as exc:
+        hook.main()
+    return exc.value.code
+
+
+def test_main_session_start_creates_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    code = _run_main(monkeypatch, tmp_path, json.dumps(ev("SessionStart")))
+    assert code == 0
+    data = json.loads((tmp_path / "sessions" / "s1.json").read_text())
+    assert data["state"] == "idle"
+    assert data["project"] == "arduino"
+
+
+def test_main_uses_claude_project_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _run_main(monkeypatch, tmp_path, json.dumps(ev("SessionStart")), "/home/u/dev/dashboard")
+    data = json.loads((tmp_path / "sessions" / "s1.json").read_text())
+    assert data["project"] == "dashboard"
+
+
+def test_main_session_end_removes_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _run_main(monkeypatch, tmp_path, json.dumps(ev("SessionStart")))
+    code = _run_main(monkeypatch, tmp_path, json.dumps(ev("SessionEnd")))
+    assert code == 0
+    assert not (tmp_path / "sessions" / "s1.json").exists()
+
+
+def test_main_invalid_json_exits_zero(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    assert _run_main(monkeypatch, tmp_path, "{not json") == 0
 ```
 
 **Step 2: Tests de `procs.find_claude_pid`** (arbre de processus injecté)
 
 ```python
-from claude_dash.procs import find_claude_pid
+import os
+
+from claude_dash.procs import find_claude_pid, parse_stat, pid_alive, proc_info
+
+Entry = tuple[int, str, list[str]]
+CLI = "/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js"
 
 
 def test_returns_first_claude_ancestor() -> None:
-    tree = {300: (200, "sh"), 200: (100, "claude"), 100: (1, "bash")}
+    tree: dict[int, Entry] = {
+        300: (200, "sh", ["sh", "-c", "claude-dash-hook"]),
+        200: (100, "claude", ["claude"]),
+        100: (1, "bash", ["bash"]),
+    }
     assert find_claude_pid(300, lambda p: tree.get(p)) == 200
 
 
 def test_node_process_with_claude_cmdline() -> None:
-    tree = {300: (200, "sh"), 200: (1, "node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js")}
+    tree: dict[int, Entry] = {
+        300: (200, "sh", ["sh"]),
+        200: (1, "node", ["/usr/bin/node", CLI]),
+    }
     assert find_claude_pid(300, lambda p: tree.get(p)) == 200
 
 
 def test_none_when_not_found() -> None:
-    tree = {300: (1, "sh")}
+    tree: dict[int, Entry] = {300: (1, "sh", ["sh"])}
     assert find_claude_pid(300, lambda p: tree.get(p)) is None
+
+
+def test_wrapper_with_claude_in_comm_is_skipped() -> None:
+    tree: dict[int, Entry] = {
+        400: (300, "python3", ["python3", "/home/u/.local/bin/claude-dash-hook"]),
+        300: (200, "claude-dash-hoo", ["/home/u/.local/bin/claude-dash-hook"]),
+        200: (100, "claude", ["claude"]),
+        100: (1, "bash", ["bash"]),
+    }
+    assert find_claude_pid(400, lambda p: tree.get(p)) == 200
+
+
+def test_shell_mentioning_claude_code_is_not_matched() -> None:
+    tree: dict[int, Entry] = {
+        300: (200, "sh", ["sh"]),
+        200: (1, "sh", ["sh", "-c", f"cd ~/claude-code-notes && node {CLI}"]),
+    }
+    assert find_claude_pid(300, lambda p: tree.get(p)) is None
+
+
+def test_node_running_other_script_is_not_matched() -> None:
+    tree: dict[int, Entry] = {
+        300: (200, "sh", ["sh"]),
+        200: (1, "node", ["node", "/srv/claude-code-proxy/index.js"]),
+    }
+    assert find_claude_pid(300, lambda p: tree.get(p)) is None
+
+
+def test_proc_info_self_returns_parent_pid() -> None:
+    info = proc_info(os.getpid())
+    assert info is not None
+    assert info[0] == os.getppid()
+    assert info[2]  # argv non vide pour le processus pytest
+
+
+def test_proc_info_missing_process() -> None:
+    assert proc_info(2**22 + 1) is None  # au-dela de pid_max par defaut
+
+
+def test_pid_alive_self() -> None:
+    assert pid_alive(os.getpid())
+
+
+def test_parse_stat_comm_with_spaces_and_parens() -> None:
+    stat = "1234 ((my (weird) proc)) S 567 1234 1234 0 -1 4194304"
+    assert parse_stat(stat) == (567, "(my (weird) proc)")
 ```
 
 **Step 3: Vérifier l'échec**
@@ -427,6 +594,8 @@ Expected: FAIL (modules absents).
 
 **Step 4: `procs.py`**
 
+Détection stricte du processus Claude (un faux positif ferait purger une session vivante par l'agent) : `comm == "claude"`, ou `argv[0]` dont le basename commence par `node` avec `argv[1]` se terminant par `/@anthropic-ai/claude-code/cli.js`. Un wrapper dont le comm contient « claude » (`claude-dash-hoo`) ou un `sh -c` citant `claude-code` ne correspond pas. `ProcInfo` renvoie donc `(ppid, comm, argv)`.
+
 ```python
 """Recherche du processus Claude Code parent d'un hook."""
 
@@ -435,21 +604,46 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 
-# pid -> (ppid, "comm + cmdline") ; None si le processus n'existe pas
-ProcInfo = Callable[[int], "tuple[int, str] | None"]
+# pid -> (ppid, comm, argv) ; None si le processus n'existe pas
+ProcInfo = Callable[[int], tuple[int, str, list[str]] | None]
+
+_CLAUDE_CLI_SUFFIX = "/@anthropic-ai/claude-code/cli.js"
 
 
-def proc_info(pid: int) -> tuple[int, str] | None:
+def parse_stat(stat: str) -> tuple[int, str]:
+    """Extrait (ppid, comm) d'une ligne /proc/<pid>/stat.
+
+    Le comm peut contenir espaces et parenthèses : on s'appuie sur la dernière ")".
+    """
+    end = stat.rindex(")")
+    comm = stat[stat.index("(") + 1 : end]
+    ppid = int(stat[end + 2 :].split()[1])
+    return ppid, comm
+
+
+def proc_info(pid: int) -> tuple[int, str, list[str]] | None:
     try:
         with open(f"/proc/{pid}/stat") as f:
             stat = f.read()
         with open(f"/proc/{pid}/cmdline", "rb") as f:
-            cmdline = f.read().replace(b"\0", b" ").decode(errors="replace")
+            raw = f.read()
     except OSError:
         return None
-    comm = stat[stat.index("(") + 1 : stat.rindex(")")]
-    ppid = int(stat[stat.rindex(")") + 2 :].split()[1])
-    return ppid, f"{comm} {cmdline}"
+    # arguments séparés par \0, terminés par \0 ; on garde les arguments vides
+    argv = [a.decode(errors="replace") for a in raw.rstrip(b"\0").split(b"\0")] if raw else []
+    ppid, comm = parse_stat(stat)
+    return ppid, comm, argv
+
+
+def is_claude(comm: str, argv: list[str]) -> bool:
+    """Vrai pour le binaire natif `claude` ou `node .../@anthropic-ai/claude-code/cli.js`."""
+    if comm == "claude":
+        return True
+    return (
+        len(argv) >= 2
+        and os.path.basename(argv[0]).startswith("node")
+        and argv[1].endswith(_CLAUDE_CLI_SUFFIX)
+    )
 
 
 def find_claude_pid(start: int, info: ProcInfo = proc_info, max_depth: int = 10) -> int | None:
@@ -459,8 +653,8 @@ def find_claude_pid(start: int, info: ProcInfo = proc_info, max_depth: int = 10)
         entry = info(pid)
         if entry is None:
             return None
-        ppid, desc = entry
-        if pid != start and ("claude" in desc.split(" ", 1)[0] or "claude-code" in desc):
+        ppid, comm, argv = entry
+        if pid != start and is_claude(comm, argv):
             return pid
         if ppid <= 1:
             return None
@@ -513,19 +707,38 @@ def _is_permission(event: dict[str, Any]) -> bool:
     return "permission" in str(event.get("message", "")).lower()
 
 
-def apply_event(data: dict[str, Any], event: dict[str, Any], now: int, pid: int | None) -> bool:
-    """Applique un événement de hook. Retourne False si la session doit être supprimée."""
+def _basename(path: str | None) -> str:
+    return PurePosixPath(path).name if path else ""
+
+
+def apply_event(
+    data: dict[str, Any],
+    event: dict[str, Any],
+    now: int,
+    pid: int | None,
+    project_dir: str | None = None,
+) -> bool:
+    """Applique un événement de hook. Retourne False si la session doit être supprimée.
+
+    `project_dir` (CLAUDE_PROJECT_DIR) fixe le projet ; à défaut, le cwd n'est utilisé
+    qu'au premier événement, pour que le libellé ne suive pas les `cd` de Claude.
+    """
     name = event.get("hook_event_name")
     if name == "SessionEnd":
         return False
 
-    if cwd := event.get("cwd"):
-        data["project"] = PurePosixPath(cwd).name
+    project = _basename(project_dir)
+    if not project and "project" not in data:
+        project = _basename(event.get("cwd"))
+    if project:
+        data["project"] = project
     if pid is not None:
         data["pid"] = pid
 
     if name == "SessionStart":
-        _set_state(data, IDLE, now)
+        # après un /compact la session continue : on garde l'état courant
+        if event.get("source") != "compact" or "state" not in data:
+            _set_state(data, IDLE, now)
     elif name == "UserPromptSubmit":
         _set_state(data, WORKING, now)
         data.pop("tool", None)
@@ -533,6 +746,10 @@ def apply_event(data: dict[str, Any], event: dict[str, Any], now: int, pid: int 
         _set_state(data, WORKING, now)
         if tool := event.get("tool_name"):
             data["tool"] = str(tool)
+    elif name == "Notification" and event.get("notification_type") == "idle_prompt":
+        # seul signal après un Esc sur une demande de permission (pas de Stop)
+        _set_state(data, IDLE, now)
+        data.pop("tool", None)
     elif name == "Notification" and _is_permission(event):
         _set_state(data, PERMISSION, now)
     elif name == "Stop":
@@ -551,21 +768,31 @@ def main() -> None:
         base = store.default_base()
         if event.get("hook_event_name") == "SessionEnd":
             store.remove_session(base, session_id)
-            return
-        pid = find_claude_pid(os.getpid())
-        now = int(time.time())
-        store.update_session(base, session_id, lambda d: apply_event(d, event, now, pid))
-    except Exception as exc:  # noqa: BLE001 - un hook ne doit jamais bloquer Claude
+        else:
+            pid = find_claude_pid(os.getpid())
+            now = int(time.time())
+            project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
+
+            def mutate(data: dict[str, Any]) -> None:
+                apply_event(data, event, now, pid, project_dir)
+
+            store.update_session(base, session_id, mutate)
+    except Exception as exc:  # un hook ne doit jamais bloquer Claude
         print(f"claude-dash-hook: {exc}", file=sys.stderr)
     sys.exit(0)
 ```
 
 Note sur `find_claude_pid(os.getpid())` : le hook tourne sous un `sh` lancé par Claude Code, lui-même lancé par le processus `claude`. On part de notre propre PID et on remonte.
 
+Choix de la machine à états :
+- `Notification` de type `idle_prompt` → `idle` (et `tool` effacé) : c'est le seul signal reçu après un Esc sur une demande de permission (aucun `Stop` n'est émis), sinon la carte resterait bloquée sur `permission`/`working`.
+- Projet : `CLAUDE_PROJECT_DIR` (lu dans `main()`, passé en `project_dir`) est prioritaire ; à défaut, le `cwd` n'est utilisé que si `project` n'est pas encore connu, pour que le libellé ne suive pas les `cd` de Claude. Un basename vide (`/`) est ignoré.
+- `SessionStart` avec `source == "compact"` ne remet pas l'état à `idle` (la session continue), sauf si aucun état n'existe encore.
+
 **Step 6: Vérifier**
 
 Run: `$SRV/run-checks.sh`
-Expected: tout passe. Si ruff signale `BLE001` non sélectionné, retirer le `noqa`.
+Expected: tout passe.
 
 **Step 7: Commit**
 

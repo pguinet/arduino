@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 
-# pid -> (ppid, "comm + cmdline") ; None si le processus n'existe pas
-ProcInfo = Callable[[int], tuple[int, str] | None]
+# pid -> (ppid, comm, argv) ; None si le processus n'existe pas
+ProcInfo = Callable[[int], tuple[int, str, list[str]] | None]
+
+_CLAUDE_CLI_SUFFIX = "/@anthropic-ai/claude-code/cli.js"
 
 
 def parse_stat(stat: str) -> tuple[int, str]:
@@ -20,16 +22,29 @@ def parse_stat(stat: str) -> tuple[int, str]:
     return ppid, comm
 
 
-def proc_info(pid: int) -> tuple[int, str] | None:
+def proc_info(pid: int) -> tuple[int, str, list[str]] | None:
     try:
         with open(f"/proc/{pid}/stat") as f:
             stat = f.read()
         with open(f"/proc/{pid}/cmdline", "rb") as f:
-            cmdline = f.read().replace(b"\0", b" ").decode(errors="replace")
+            raw = f.read()
     except OSError:
         return None
+    # arguments séparés par \0, terminés par \0 ; on garde les arguments vides
+    argv = [a.decode(errors="replace") for a in raw.rstrip(b"\0").split(b"\0")] if raw else []
     ppid, comm = parse_stat(stat)
-    return ppid, f"{comm} {cmdline}"
+    return ppid, comm, argv
+
+
+def is_claude(comm: str, argv: list[str]) -> bool:
+    """Vrai pour le binaire natif `claude` ou `node .../@anthropic-ai/claude-code/cli.js`."""
+    if comm == "claude":
+        return True
+    return (
+        len(argv) >= 2
+        and os.path.basename(argv[0]).startswith("node")
+        and argv[1].endswith(_CLAUDE_CLI_SUFFIX)
+    )
 
 
 def find_claude_pid(start: int, info: ProcInfo = proc_info, max_depth: int = 10) -> int | None:
@@ -39,8 +54,8 @@ def find_claude_pid(start: int, info: ProcInfo = proc_info, max_depth: int = 10)
         entry = info(pid)
         if entry is None:
             return None
-        ppid, desc = entry
-        if pid != start and ("claude" in desc.split(" ", 1)[0] or "claude-code" in desc):
+        ppid, comm, argv = entry
+        if pid != start and is_claude(comm, argv):
             return pid
         if ppid <= 1:
             return None
