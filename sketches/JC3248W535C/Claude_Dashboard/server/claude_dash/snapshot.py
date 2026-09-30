@@ -14,6 +14,9 @@ LIMIT_KEYS = ("h5", "h5_reset", "d7", "d7_reset")
 PCT_KEYS = ("h5", "d7")
 PID_MAX = 4_194_304  # borne haute de /proc/sys/kernel/pid_max sous Linux 64 bits
 HOST_MAX = 32
+ID_MAX = 8
+TIME_MAX = 2**32  # horodatages epoch publiés : uint32 côté firmware
+TIME_KEYS = ("h5_reset", "d7_reset")
 
 
 def _as_int(value: Any) -> int:
@@ -25,6 +28,12 @@ def _as_int(value: Any) -> int:
     if isinstance(value, float) and math.isfinite(value):
         return int(value)
     return 0
+
+
+def _as_time(value: Any) -> int:
+    """Horodatage epoch borné à 0 <= v < 2**32, sinon 0 (évite un payload gonflé)."""
+    t = _as_int(value)
+    return t if 0 <= t < TIME_MAX else 0
 
 
 def _clamp_pct(value: int) -> int:
@@ -58,11 +67,11 @@ def _public(sess: dict[str, Any]) -> dict[str, Any]:
     """Ne garde que les champs publiables : jamais de pid, chemin ou autre."""
     state = sess.get("state")
     out: dict[str, Any] = {
-        "id": str(sess["id"])[:8],
+        "id": _text(sess["id"], ID_MAX, "?"),
         "project": _text(sess.get("project"), 32, "?"),
         "model": _text(sess.get("model"), 24),
         "state": state if state in STATES else "idle",
-        "since": _as_int(sess.get("since")),
+        "since": _as_time(sess.get("since")),
     }
     ctx = sess.get("ctx")
     if isinstance(ctx, int) and not isinstance(ctx, bool):
@@ -81,7 +90,7 @@ def _public_limits(limits: Any) -> dict[str, int]:
     for key in LIMIT_KEYS:
         value = limits.get(key)
         if isinstance(value, int) and not isinstance(value, bool):
-            out[key] = _clamp_pct(value) if key in PCT_KEYS else value
+            out[key] = _clamp_pct(value) if key in PCT_KEYS else _as_time(value)
     return out
 
 

@@ -163,13 +163,13 @@ def test_worst_case_payload_fits_mqtt_buffer() -> None:
             model=nasty,
             tool=nasty,
             state="permission",
-            since=9_999_999_999,
+            since=2**32 - 1,
             updated=NOW - i,
             ctx=100,
         )
         for i in range(12)
     ]
-    limits = {"h5": 100, "h5_reset": 9_999_999_999, "d7": 100, "d7_reset": 9_999_999_999}
+    limits = {"h5": 100, "h5_reset": 2**32 - 1, "d7": 100, "d7_reset": 2**32 - 1}
     snap, _ = build_snapshot("h" * 100, sessions, limits, NOW, pid_alive=lambda p: True)
     payload = json.dumps(snap, separators=(",", ":")).encode()
     assert len(snap["sessions"]) == 12
@@ -242,4 +242,28 @@ def test_non_dict_sessions_skipped() -> None:
         "srv", ["x", None, 3, s(id="ok")], {}, NOW, pid_alive=lambda p: True
     )
     assert [x["id"] for x in snap["sessions"]] == ["ok"]
+    assert dead == []
+
+
+def test_times_bounded_to_uint32() -> None:
+    sessions = [
+        s(id="a", since=10**30, updated=NOW - 1),
+        s(id="b", since=-5, updated=NOW - 2),
+        s(id="c", since=2**32, updated=NOW - 3),
+        s(id="d", since=2**32 - 1, updated=NOW - 4),
+    ]
+    limits = {"h5": 1, "h5_reset": 10**30, "d7": 1, "d7_reset": -1}
+    snap, _ = build_snapshot("srv", sessions, limits, NOW, pid_alive=lambda p: True)
+    assert [x["since"] for x in snap["sessions"]] == [0, 0, 0, 2**32 - 1]
+    assert snap["limits"] == {"h5": 1, "h5_reset": 0, "d7": 1, "d7_reset": 0}
+
+
+def test_id_sanitized_as_text() -> None:
+    sessions = [
+        s(id="é\x01" + "x" * 20, updated=NOW - 1),
+        s(id=12345, updated=NOW - 2),
+        s(id="🎉", updated=NOW - 3),
+    ]
+    snap, dead = build_snapshot("srv", sessions, {}, NOW, pid_alive=lambda p: True)
+    assert [x["id"] for x in snap["sessions"]] == ["exxxxxxx", "?", "?"]
     assert dead == []
