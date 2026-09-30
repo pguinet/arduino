@@ -12,8 +12,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 PYTHON="${PYTHON:-python3}"
 VENV="$HOME/.local/share/claude-dash/venv"
 BIN="$HOME/.local/bin"
-CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claude-dash"
-UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+# Chemins fixes (pas $XDG_CONFIG_HOME) : l'agent lancé par systemd --user lit ~/.config,
+# et ~/.config/systemd/user est l'emplacement fiable des units utilisateur.
+CONF_DIR="$HOME/.config/claude-dash"
+UNIT_DIR="$HOME/.config/systemd/user"
 UNIT=claude-dash-agent.service
 SETTINGS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
 HOOK="$BIN/claude-dash-hook"
@@ -58,43 +60,59 @@ usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; }
 
 require_jq() { command -v jq >/dev/null || die "jq requis (apt install jq)"; }
 
-# Vérifie que settings.json est un objet JSON dont les hooks ont la forme attendue.
+# check_settings [FICHIER] : objet JSON dont hooks est un objet de tableaux d'objets.
+# Les erreurs de syntaxe de jq restent affichées.
 check_settings() {
+  local file=${1:-$SETTINGS}
   jq -e '
     type == "object"
     and ((.hooks // {}) | type == "object")
     and ([(.hooks // {})[] | type == "array"] | all)
-  ' "$SETTINGS" >/dev/null 2>&1 \
-    || die "$SETTINGS n'est pas un JSON valide de la forme attendue : fichier laissé intact"
+    and ([(.hooks // {})[][] | type == "object"] | all)
+  ' "$file" >/dev/null \
+    || die "$SETTINGS invalide (JSON attendu : {\"hooks\": {\"<événement>\": [{…}]}}) : fichier laissé intact"
 }
 
 # edit_settings FILTRE : applique le filtre jq ; écrit seulement si le contenu change,
-# après une sauvegarde horodatée. L'écriture passe par le fichier existant (cat >) pour
-# conserver ses droits et un éventuel lien symbolique (dotfiles).
+# après une sauvegarde. Écriture atomique : fichier temporaire dans le dossier de la
+# cible réelle (lien symbolique résolu), mêmes droits, puis mv ; abandon si le fichier a
+# été modifié entre-temps (Claude Code ouvert, autre éditeur).
 edit_settings() {
-  local filter=$1 tmp backup
+  local filter=$1 target dir orig tmp backup
   require_jq
   if [ ! -e "$SETTINGS" ]; then
     mkdir -p "$(dirname "$SETTINGS")"
     echo '{}' >"$SETTINGS"
   fi
-  check_settings
-  tmp="$(mktemp)"
-  # shellcheck disable=SC2064  # $tmp est figé volontairement
-  trap "rm -f '$tmp'" EXIT
-  jq --arg cmd "$HOOK" --argjson events "$EVENTS" "$filter" "$SETTINGS" >"$tmp"
+  target="$(readlink -f "$SETTINGS")"
+  dir="$(dirname "$target")"
+  orig="$(mktemp "$dir/.settings.json.orig.XXXXXX")"
+  tmp="$(mktemp "$dir/.settings.json.new.XXXXXX")"
+  # shellcheck disable=SC2064  # chemins figés volontairement
+  trap "rm -f '$orig' '$tmp'" EXIT
+  cp "$target" "$orig" # contenu lu : base de la fusion et de la détection de conflit
+  check_settings "$orig"
+  jq --arg cmd "$HOOK" --argjson events "$EVENTS" "$filter" "$orig" >"$tmp"
   jq -e 'type == "object"' "$tmp" >/dev/null || die "fusion jq invalide : $SETTINGS intact"
-  if jq -e --slurpfile new "$tmp" '. == $new[0]' "$SETTINGS" >/dev/null; then
+  if jq -e --slurpfile new "$tmp" '. == $new[0]' "$orig" >/dev/null; then
     info "hooks Claude Code déjà à jour ($SETTINGS)"
     return
   fi
-  backup="$SETTINGS.bak-claude-dash-$(date +%Y%m%d-%H%M%S)"
-  cp -p "$SETTINGS" "$backup"
-  cat "$tmp" >"$SETTINGS"
+  backup="$SETTINGS.bak-claude-dash-$(date +%Y%m%d-%H%M%S-%N)-$$"
+  cp "$orig" "$backup"
+  chmod --reference="$target" "$tmp"
+  # point d'injection pour dev/test-install.sh (modification concurrente simulée)
+  if [ -n "${CLAUDE_DASH_TEST_BEFORE_WRITE:-}" ]; then bash -c "$CLAUDE_DASH_TEST_BEFORE_WRITE"; fi
+  cmp -s "$orig" "$target" \
+    || die "$SETTINGS a été modifié pendant l'opération : rien écrit, relance le script"
+  mv -f "$tmp" "$target"
   info "hooks Claude Code mis à jour ($SETTINGS, sauvegarde $backup)"
 }
 
-merge_hooks() { edit_settings "$JQ_INSTALL"; }
+merge_hooks() {
+  edit_settings "$JQ_INSTALL"
+  [ -x "$HOOK" ] || info "ATTENTION : $HOOK absent ou non exécutable (lancer ./install.sh sans option)"
+}
 remove_hooks() {
   if [ -e "$SETTINGS" ]; then edit_settings "$JQ_UNINSTALL"; else info "pas de $SETTINGS"; fi
 }
@@ -114,7 +132,8 @@ check_python() {
 
 install_package() {
   check_python
-  [ -x "$VENV/bin/python" ] || "$PYTHON" -m venv "$VENV"
+  # --clear : repart de zéro si un venv cassé (bin/python absent) traîne
+  [ -x "$VENV/bin/python" ] || "$PYTHON" -m venv --clear "$VENV"
   "$VENV/bin/pip" install -q --disable-pip-version-check --upgrade "$HERE"
   # même numéro de version : forcer la réinstallation du code (mise à jour du dépôt)
   "$VENV/bin/pip" install -q --disable-pip-version-check --force-reinstall --no-deps "$HERE"
@@ -152,7 +171,7 @@ install_unit() {
     return
   fi
   systemctl --user daemon-reload
-  systemctl --user enable "$UNIT" >/dev/null 2>&1
+  systemctl --user enable "$UNIT" 2>/dev/null || die "systemctl --user enable $UNIT a échoué"
   if [ "$config_ready" = yes ]; then
     systemctl --user restart "$UNIT"
     info "service $UNIT activé et (re)démarré"
@@ -162,27 +181,46 @@ install_unit() {
   fi
 }
 
+# Rappel statusline : cherche claude-dash-statusline dans la commande statusLine ou dans
+# le script qu'elle lance (premier mot désignant un fichier, ~ développé).
+statusline_hint() {
+  local cmd word script=""
+  local -a words=()
+  cmd="$(jq -r '.statusLine.command? // empty' "$SETTINGS" 2>/dev/null)" || cmd=""
+  read -ra words <<<"$cmd" || true
+  for word in "${words[@]}"; do
+    word="${word/#\~/$HOME}"
+    if [ -f "$word" ]; then script=$word; break; fi
+  done
+  if [[ "$cmd" == *claude-dash-statusline* ]] \
+    || { [ -n "$script" ] && grep -q claude-dash-statusline "$script"; }; then
+    echo "1. Statusline : appel à claude-dash-statusline déjà présent (${script:-statusLine})."
+    return
+  fi
+  cat <<EOF
+1. Statusline : ajoute à ${script:-ton script}, juste après la lecture de stdin (input=\$(cat)),
+   un appel AU PREMIER PLAN (pas de &) :
+     printf '%s' "\$input" | timeout 1 $BIN/claude-dash-statusline >/dev/null 2>&1
+   (sans statusline : voir le README pour en créer une minimale)
+EOF
+}
+
 do_install() {
-  local config_ready=no statusline_hint=""
+  local config_ready=no
   require_jq
+  [ ! -e "$SETTINGS" ] || check_settings # échouer avant d'installer quoi que ce soit
   install_package
   if install_config; then config_ready=yes; fi
   merge_hooks
   install_unit "$config_ready"
-  if ! grep -q claude-dash-statusline "$SETTINGS" 2>/dev/null; then
-    statusline_hint=yes
-  fi
+  echo
+  echo "Installation terminée."
+  statusline_hint
   cat <<EOF
-
-Installation terminée.
-1. Statusline : ajoute à ton script, juste après la lecture de stdin (input=\$(cat)),
-   un appel AU PREMIER PLAN (pas de &) :
-     printf '%s' "\$input" | timeout 1 $BIN/claude-dash-statusline >/dev/null 2>&1
-   (sans statusline : voir le README pour en créer une minimale)${statusline_hint:+
-   -> aucune référence à claude-dash-statusline trouvée dans $SETTINGS}
 2. Pour que l'agent tourne sans session SSH ouverte :
      loginctl enable-linger \$USER
 3. Logs : journalctl --user -u claude-dash-agent -f
+4. Redémarre les sessions Claude Code ouvertes (ou vérifie /hooks) pour activer les hooks.
 EOF
 }
 
@@ -191,7 +229,10 @@ do_uninstall() {
   remove_hooks
   if have_user_systemd; then
     systemctl --user disable --now "$UNIT" >/dev/null 2>&1 || true
+  elif [ -e "$UNIT_DIR/$UNIT" ] || [ -L "$UNIT_DIR/default.target.wants/$UNIT" ]; then
+    info "ATTENTION : systemd --user indisponible, service non arrêté (pkill -f claude-dash-agent)"
   fi
+  rm -f "$UNIT_DIR/default.target.wants/$UNIT"
   if [ -f "$UNIT_DIR/$UNIT" ]; then
     rm -f "$UNIT_DIR/$UNIT"
     info "service $UNIT supprimé"

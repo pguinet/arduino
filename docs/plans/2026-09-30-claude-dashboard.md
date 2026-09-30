@@ -1501,13 +1501,15 @@ Description=Claude Code dashboard agent (MQTT)
 ExecStart=%h/.local/bin/claude-dash-agent
 Restart=always
 RestartSec=10
+RestartPreventExitStatus=2
 
 [Install]
 WantedBy=default.target
 ```
 
 (`After=network-online.target` retiré : sans effet dans le gestionnaire utilisateur ;
-l'agent se reconnecte seul.)
+l'agent se reconnecte seul. `RestartPreventExitStatus=2` : config invalide → pas de relance
+en boucle.)
 
 **Step 2: `config.toml.example`** — le contenu TOML de la Task 5 avec des placeholders (`votre_host`, `votre_user`, `votre_mot_de_passe`) et `tls = true`.
 
@@ -1515,7 +1517,8 @@ l'agent se reconnecte seul.)
 
 Le script réel (`$SRV/install.sh`) reprend le principe (venv `~/.local/share/claude-dash/venv`,
 liens dans `~/.local/bin`, config `install -m 600` jamais écrasée, unit dans
-`~/.config/systemd/user`) avec :
+`~/.config/systemd/user`, chemins fixes : `$XDG_CONFIG_HOME` ignoré car l'agent sous systemd lit
+`~/.config`) avec :
 
 - trois modes : installation (défaut, idempotente), `--hooks-only`, `--uninstall` ;
 - vérifications : `jq`, Python ≥ 3.11 et module `venv` (variable `PYTHON`) ;
@@ -1523,17 +1526,25 @@ liens dans `~/.local/bin`, config `install -m 600` jamais écrasée, unit dans
 - fusion jq : entrées `claude-dash-hook` reconnues par leur commande (`(^|/)claude-dash-hook$`,
   quel que soit le chemin), retirées au niveau du hook (les hooks tiers d'un même groupe
   restent), puis une entrée sans `matcher` par événement (7 événements, `timeout: 5`) ;
-- `settings.json` validé avant fusion (objet, `hooks` objet de tableaux) : sinon arrêt
-  sans rien toucher ; réécriture seulement si le contenu change, après sauvegarde horodatée
-  `settings.json.bak-claude-dash-AAAAMMJJ-HHMMSS` (une sauvegarde unique écrasée à chaque
-  passage perdait l'original) ; écriture par `cat >` pour conserver droits et lien symbolique ;
+- `settings.json` validé avant fusion (objet, `hooks` objet de tableaux d'objets, erreur jq
+  affichée) : sinon arrêt sans rien toucher — dès le début de l'installation complète, avant le
+  venv ; réécriture seulement si le contenu change, après sauvegarde
+  `settings.json.bak-claude-dash-AAAAMMJJ-HHMMSS-<ns>-<pid>` (une sauvegarde unique écrasée à
+  chaque passage perdait l'original) ;
+- écriture atomique : cible résolue (`readlink -f`), temporaire dans son dossier,
+  `chmod --reference`, `mv -f` (lien symbolique et droits conservés) ; juste avant le `mv`,
+  abandon avec message si le fichier a changé depuis sa lecture (`cmp`) ;
+- `--hooks-only` avertit si `~/.local/bin/claude-dash-hook` n'est pas exécutable ; rappel
+  statusline : `.statusLine.command` lu avec jq, le script qu'elle lance est cherché et inspecté,
+  sinon rappel générique ; venv recréé avec `--clear` si `bin/python` manque ;
 - `pip install --upgrade` puis `--force-reinstall --no-deps` (même numéro de version après
   un `git pull`) ;
 - systemd : si `systemctl --user show-environment` échoue (conteneur, pas de bus), l'unit est
-  copiée mais pas activée, avec un message ; sinon `enable`, et `restart` seulement si la
-  config ne contient plus de placeholder `votre_` ;
+  copiée mais pas activée, avec un message ; sinon `enable` (échec → arrêt explicite), et
+  `restart` seulement si la config ne contient plus de placeholder `votre_` ;
 - `--uninstall` : retire nos hooks (supprime les tableaux d'événement vidés, puis `hooks` si
-  vide), `disable --now` + suppression de l'unit, du venv et de nos liens ; conserve config,
+  vide), `disable --now` + suppression de l'unit (et du lien `default.target.wants`, avec
+  avertissement « non arrêté » sans bus utilisateur), du venv et de nos liens ; conserve config,
   store et sauvegardes ; ne crée pas `settings.json` s'il est absent ; idempotent.
 
 `chmod +x install.sh`. Vérifier avec `shellcheck` en Docker :
@@ -1546,7 +1557,8 @@ synthétique `dev/fixtures/settings.json` (hooks rtk-like, hook `Stop` tiers par
 ancienne entrée claude-dash, `PreCompact`, statusLine…) : 7 entrées uniques, hooks tiers et reste
 du fichier conservés, sauvegarde, second passage sans écriture ; désinstallation (et
 install + uninstall = original) ; cas limites (JSON invalide, `hooks` non objet, fichier absent,
-lien symbolique, droits) ; installation complète sans systemd puis réinstallation (config
+lien symbolique, droits, entrée non objet, modification concurrente simulée via
+`CLAUDE_DASH_TEST_BEFORE_WRITE`, temporaires nettoyés, sauvegardes distinctes) ; rappel statusline ; installation complète sans systemd puis réinstallation (config
 conservée, remise en 600) et désinstallation. `CLAUDE_DASH_EXTRA_SETTINGS=~/.claude/settings.json`
 rejoue la fusion sur une copie en lecture seule d'un vrai fichier (jamais versionné).
 Expected : `RÉSULTAT : PASS`.

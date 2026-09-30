@@ -40,7 +40,8 @@ Aucun `sudo` n'est nécessaire.
 ## Installation
 
 ```bash
-git clone <dépôt> && cd sketches/JC3248W535C/Claude_Dashboard/server
+git clone <url du dépôt> <dépôt>
+cd <dépôt>/sketches/JC3248W535C/Claude_Dashboard/server
 ./install.sh
 ```
 
@@ -56,6 +57,15 @@ Le script est idempotent : relance-le après un `git pull` pour mettre à jour. 
 
 Sans `systemd --user` utilisable (conteneur, session sans bus utilisateur), le
 service est copié mais pas activé : le script le signale et continue.
+
+Les chemins `~/.config/claude-dash/` et `~/.config/systemd/user/` sont fixes :
+`$XDG_CONFIG_HOME` est ignoré par le script, car l'agent lancé par `systemd --user`
+lit toujours `~/.config/claude-dash/config.toml`. Si ton shell définit
+`XDG_CONFIG_HOME`, un `claude-dash-agent` lancé à la main y cherchera sa config :
+passe par le service.
+
+Les sessions Claude Code déjà ouvertes ne voient pas les nouveaux hooks :
+redémarre-les (ou vérifie avec `/hooks`).
 
 Ensuite :
 
@@ -73,13 +83,19 @@ journalctl --user -u claude-dash-agent -f   # vérifier "MQTT connecté"
 
 - une entrée par événement, sans `matcher` (= tous les outils pour
   `PreToolUse`/`PostToolUse`) :
-  `{"hooks": [{"type": "command", "command": "~/.local/bin/claude-dash-hook", "timeout": 5}]}` ;
+  `{"hooks": [{"type": "command", "command": "/home/<toi>/.local/bin/claude-dash-hook", "timeout": 5}]}`
+  (chemin absolu) ;
 - les anciennes entrées `claude-dash-hook` (quel que soit leur chemin) sont
   remplacées : pas de doublon au second passage ;
-- le fichier n'est réécrit que s'il change, après une sauvegarde horodatée
-  `settings.json.bak-claude-dash-AAAAMMJJ-HHMMSS` ; un lien symbolique est suivi
+- le fichier n'est réécrit que s'il change, après une sauvegarde
+  `settings.json.bak-claude-dash-AAAAMMJJ-HHMMSS-<ns>-<pid>` ; l'écriture est atomique
+  (fichier temporaire à côté de la cible puis `mv`), un lien symbolique est suivi
   (dotfiles) et les droits sont conservés ;
-- si `settings.json` n'est pas un JSON valide, le script s'arrête sans rien modifier.
+- `jq` reformate le fichier (indentation de 2 espaces) quand il le réécrit ;
+- si `settings.json` n'est pas un JSON valide (ou si une entrée de hook n'est pas un
+  objet), le script s'arrête sans rien modifier et affiche l'erreur ; s'il est
+  modifié pendant l'opération (Claude Code qui l'enregistre), rien n'est écrit :
+  relance le script.
 
 `./install.sh --hooks-only` n'effectue que cette fusion. `CLAUDE_CONFIG_DIR` est
 respecté si tu l'utilises.
@@ -138,8 +154,10 @@ topic_prefix = "claude-dash"
   défaut c'est le nom court de la machine ; si deux serveurs partagent le même,
   renseigne `[agent] hostname` sur l'un d'eux (`A-Z a-z 0-9 . _ -`, 32 max).
 - `tls = false` n'est prévu que pour un Mosquitto local de test (`dev/`).
-- L'agent lit `$XDG_CONFIG_HOME/claude-dash/config.toml` ; sous systemd,
-  `XDG_CONFIG_HOME` de ton shell n'est pas transmis : garde l'emplacement par défaut.
+- Emplacement fixe : `~/.config/claude-dash/config.toml` (voir « Installation »).
+- Une config invalide fait sortir l'agent avec le code 2 : le service n'est alors pas
+  relancé en boucle (`RestartPreventExitStatus=2`) ; corrige puis
+  `systemctl --user restart claude-dash-agent`.
 
 ### Broker : comptes et ACL recommandées
 
@@ -177,7 +195,9 @@ ls ~/.claude/dashboard/sessions/        # état brut des sessions
 ```
 
 Retire les entrées `claude-dash-hook` de `settings.json` (sauvegarde préalable, le
-reste est conservé), arrête et supprime le service, le venv et les commandes. La
+reste est conservé), arrête et supprime le service, le venv et les commandes. Sans
+`systemd --user` joignable, le service est désactivé (liens supprimés) mais pas
+arrêté : le script le signale (`pkill -f claude-dash-agent`). La
 config (`~/.config/claude-dash/`, qui contient le mot de passe), l'état des sessions
 (`~/.claude/dashboard/`) et l'appel dans ta statusline sont conservés : supprime-les
 à la main. Relancer la commande est sans effet.

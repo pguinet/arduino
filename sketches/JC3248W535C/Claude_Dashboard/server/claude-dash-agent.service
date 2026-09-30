@@ -5,6 +5,8 @@ Description=Claude Code dashboard agent (MQTT)
 ExecStart=%h/.local/bin/claude-dash-agent
 Restart=always
 RestartSec=10
+# code 2 = config invalide (config.toml) : inutile de relancer en boucle
+RestartPreventExitStatus=2
 
 [Install]
 WantedBy=default.target

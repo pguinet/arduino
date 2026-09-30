@@ -67,6 +67,8 @@ same_json() { [ "$(jq -S . "$1")" = "$(jq -S . "$2")" ]; }
 same_outside_hooks() { [ "$(jq -S 'del(.hooks)' "$1")" = "$(jq -S 'del(.hooks)' "$2")" ]; }
 same_foreign() { [ "$(foreign "$1")" = "$(foreign "$2")" ]; }
 backups() { find "$HOME/.claude" -maxdepth 1 -name 'settings.json.bak-claude-dash-*' | wc -l; }
+# Aucun fichier temporaire .settings.json.* laissé dans le dossier $1.
+no_tmp_left() { ! find "$1" -maxdepth 1 -name '.settings.json.*' | grep -q .; }
 reset_home() { rm -rf "$HOME/.claude" "$HOME/.config" "$HOME/.local"; mkdir -p "$HOME/.claude"; }
 
 # Fusion puis désinstallation sur un settings.json donné.
@@ -100,6 +102,9 @@ merge_suite() {
   "$INSTALL" --uninstall >/dev/null 2>&1
   check "[$name] 2e désinstallation : fichier inchangé" \
     bash -c "[ '$sum' = \"\$(sha256sum '$SETTINGS')\" ]"
+  check "[$name] install + uninstall rapprochés : 2 sauvegardes distinctes" \
+    bash -c "[ $(backups) -eq 2 ]"
+  check "[$name] aucun fichier temporaire laissé" no_tmp_left "$HOME/.claude"
 }
 
 merge_suite synthétique "$SRC/dev/fixtures/settings.json"
@@ -109,7 +114,8 @@ echo "== Cas limites"
 reset_home
 bad='{"hooks": {"Stop": ['
 printf '%s' "$bad" >"$SETTINGS"
-check "JSON invalide : échec" bash -c "! '$INSTALL' --hooks-only"
+check "JSON invalide : échec" bash -c "! '$INSTALL' --hooks-only 2>$LOG"
+check "JSON invalide : erreur de jq affichée" grep -qi "parse error" "$LOG"
 check "JSON invalide : fichier intact" bash -c "[ \"\$(cat '$SETTINGS')\" = '$bad' ]"
 check "JSON invalide : aucune sauvegarde" bash -c "[ $(backups) -eq 0 ]"
 
@@ -121,6 +127,26 @@ check "hooks non objet : échec, fichier intact" \
 reset_home
 echo '{"hooks": {"Stop": {"oops": 1}}}' >"$SETTINGS"
 check "événement non tableau : échec" bash -c "! '$INSTALL' --hooks-only"
+
+reset_home
+echo '{"hooks": {"Stop": ["echo x"]}}' >"$SETTINGS"
+check "entrée d'événement non objet : échec, fichier intact" \
+  bash -c "! '$INSTALL' --hooks-only && grep -q 'echo x' '$SETTINGS' && ! grep -q claude-dash '$SETTINGS'"
+
+reset_home
+cp "$SRC/dev/fixtures/settings.json" "$SETTINGS"
+concurrent='{"modifie": "ailleurs"}'
+check "modification concurrente : échec" \
+  env CLAUDE_DASH_TEST_BEFORE_WRITE="echo '$concurrent' >'$SETTINGS'" \
+  bash -c "! '$INSTALL' --hooks-only 2>$LOG"
+check "modification concurrente : message clair" grep -q "modifié pendant" "$LOG"
+check "modification concurrente : version concurrente conservée" \
+  bash -c "[ \"\$(cat '$SETTINGS')\" = '$concurrent' ]"
+check "modification concurrente : aucun fichier temporaire laissé" no_tmp_left "$HOME/.claude"
+
+reset_home
+"$INSTALL" --hooks-only >"$LOG" 2>&1
+check "--hooks-only sans commande installée : avertissement" grep -q "non exécutable" "$LOG"
 
 reset_home
 rm -rf "$HOME/.claude"
@@ -140,20 +166,32 @@ ln -s "$HOME/dotfiles/settings.json" "$SETTINGS"
 check "lien symbolique conservé et cible mise à jour" \
   bash -c "[ -L '$SETTINGS' ] && grep -q claude-dash-hook '$HOME/dotfiles/settings.json'"
 check "droits du fichier conservés" bash -c "[ \$(stat -c %a '$HOME/dotfiles/settings.json') = 640 ]"
+check "lien symbolique : temporaires hors de ~/.claude et nettoyés" \
+  bash -c "$(declare -f no_tmp_left); no_tmp_left '$HOME/dotfiles' && no_tmp_left '$HOME/.claude'"
 
 reset_home
 check "option inconnue : échec" bash -c "! '$INSTALL' --bogus"
 
 echo "== Installation complète (sans systemd --user)"
 reset_home
+echo '{"hooks": ' >"$SETTINGS"
+check "settings.json invalide : install échoue avant le venv" \
+  bash -c "! '$INSTALL' && [ ! -e '$HOME/.local/share/claude-dash' ]"
+
+reset_home
 cp "$SRC/dev/fixtures/settings.json" "$SETTINGS"
+mkdir -p "$HOME/.local/share/claude-dash/venv/bin"
+echo "reste d'un venv cassé" >"$HOME/.local/share/claude-dash/venv/bin/python"
 if "$INSTALL" >"$LOG" 2>&1; then pass "install.sh réussit"; else fail "install.sh réussit"; cat "$LOG"; fi
 CONF="$HOME/.config/claude-dash/config.toml"
 for cmd in claude-dash-hook claude-dash-statusline claude-dash-agent; do
   check "commande $cmd exécutable" test -x "$HOME/.local/bin/$cmd"
 done
 check "config créée en 600" bash -c "[ \$(stat -c %a '$CONF') = 600 ]"
+check "venv cassé recréé" test -x "$HOME/.local/share/claude-dash/venv/bin/python"
 check "service copié" test -f "$HOME/.config/systemd/user/claude-dash-agent.service"
+check "service : pas de relance en boucle sur erreur de config" \
+  grep -qx "RestartPreventExitStatus=2" "$HOME/.config/systemd/user/claude-dash-agent.service"
 check "absence de systemd signalée" grep -q "systemd --user indisponible" "$LOG"
 check "rappel statusline affiché" grep -q "timeout 1 $HOME/.local/bin/claude-dash-statusline" "$LOG"
 check "hooks fusionnés" one_entry_per_event
@@ -170,12 +208,35 @@ if "$INSTALL" >"$LOG" 2>&1; then pass "2e install.sh réussit"; else fail "2e in
 check "2e install : config conservée" grep -q broker.example "$CONF"
 check "2e install : config remise en 600" bash -c "[ \$(stat -c %a '$CONF') = 600 ]"
 check "2e install : settings.json inchangé" bash -c "[ '$sum' = \"\$(sha256sum '$SETTINGS')\" ]"
+check "2e install : rappel des sessions à redémarrer" grep -q "/hooks" "$LOG"
+
+# statusLine pointant vers un script qui appelle déjà le collecteur
+# shellcheck disable=SC2016  # contenu littéral du script
+printf '#!/bin/sh\ninput=$(cat)\nprintf "%%s" "$input" | timeout 1 claude-dash-statusline\n' \
+  >"$HOME/.claude/sl.sh"
+jq '.statusLine.command = "bash ~/.claude/sl.sh"' "$SETTINGS" >/tmp/s.json
+cat /tmp/s.json >"$SETTINGS"
+"$INSTALL" >"$LOG" 2>&1 || true
+check "statusline déjà branchée : détectée dans le script" grep -q "déjà présent ($HOME/.claude/sl.sh)" "$LOG"
+check "statusline déjà branchée : pas de rappel" bash -c "! grep -q 'AU PREMIER PLAN' '$LOG'"
+sed -i '/claude-dash-statusline/d' "$HOME/.claude/sl.sh"
+"$INSTALL" >"$LOG" 2>&1 || true
+check "statusline non branchée : rappel nommant le script" \
+  grep -q "ajoute à $HOME/.claude/sl.sh" "$LOG"
+
+# lien d'activation laissé par un enable antérieur
+mkdir -p "$HOME/.config/systemd/user/default.target.wants"
+ln -sf ../claude-dash-agent.service \
+  "$HOME/.config/systemd/user/default.target.wants/claude-dash-agent.service"
 
 if "$INSTALL" --uninstall >"$LOG" 2>&1; then pass "désinstallation complète réussit"; else
   fail "désinstallation complète réussit"; cat "$LOG"; fi
 check "venv supprimé" test ! -e "$HOME/.local/share/claude-dash"
 check "commandes supprimées" bash -c "! ls '$HOME'/.local/bin/claude-dash-* 2>/dev/null"
 check "service supprimé" test ! -e "$HOME/.config/systemd/user/claude-dash-agent.service"
+check "lien default.target.wants supprimé" \
+  test ! -L "$HOME/.config/systemd/user/default.target.wants/claude-dash-agent.service"
+check "service non arrêtable signalé" grep -q "service non arrêté" "$LOG"
 check "config conservée" test -f "$CONF"
 check "hooks retirés" no_claude_dash
 check "2e désinstallation réussit" "$INSTALL" --uninstall
