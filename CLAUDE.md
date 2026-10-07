@@ -11,10 +11,15 @@ Tu as accès à l'arduino CLI dans le dossier bin du répertoire courant.
 - `stty -F /dev/ttyUSB0 ...`
 - Tout accès bash direct au port série
 
-**Pour lire la sortie série** : Utilise uniquement l'arduino-cli monitor avec un timeout :
+**Pour lire la sortie série** : Utilise uniquement l'arduino-cli monitor, avec un timeout **et une entrée standard qui reste ouverte** :
 ```bash
-timeout 30 ./bin/arduino-cli monitor -p /dev/ttyUSB0 -c baudrate=115200
+sleep 35 | timeout 30 ./bin/arduino-cli monitor -p /dev/ttyUSB0 -c baudrate=115200 --quiet
 ```
+
+- Sans le `sleep N |`, le moniteur se ferme tout de suite dès que son entrée standard n'est pas un terminal (code 0, aucune sortie) : c'est le cas sous Claude Code.
+- `--timestamp` horodate chaque ligne, pratique pour mesurer des délais (reconnexion, heartbeat…).
+- Sur les cartes ESP32-S3 en USB natif (`/dev/ttyACM0`), le moniteur ne voit pas le démarrage s'il est lancé après l'upload : enchaîner `upload` puis le moniteur dans la même commande.
+- Valable aussi pour les projets PlatformIO : `pio device monitor` plante sans vrai terminal (TTY), il est réservé à l'utilisateur.
 
 ## Git
 
@@ -334,7 +339,7 @@ Carte ESP32-S3 avec écran tactile capacitif 3.5" IPS (320×480). Vendeur : Guit
 cd sketches/JC3248W535C/<projet>
 pio run                              # Compiler
 pio run -t upload                    # Uploader
-pio device monitor                   # Monitor série
+pio device monitor                   # Monitor série (terminal interactif uniquement)
 ```
 
 **Bibliothèques** :
@@ -433,7 +438,7 @@ Carte ESP32-S3 avec écran tactile capacitif 4" IPS (480×480) et 3 relais. Fabr
 cd sketches/ESP32-4848S040/<projet>
 pio run                              # Compiler
 pio run -t upload                    # Uploader
-pio device monitor                   # Monitor série
+pio device monitor                   # Monitor série (terminal interactif uniquement)
 ```
 
 **Sketches disponibles** :
