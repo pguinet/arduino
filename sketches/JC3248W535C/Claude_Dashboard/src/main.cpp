@@ -69,7 +69,6 @@
 #define MQTT_BUFFER_SIZE     4096
 #define WIFI_FORCE_AFTER_MS  30000UL   // reconnexion forcee apres 30 s sans WiFi
 #define WIFI_SCAN_TIMEOUT_MS 15000UL   // scan asynchrone abandonne au-dela
-#define WIFI_SCAN_MAX        32        // reseaux visibles examines au plus
 #define WIFI_SCAN_RETRY_MS   1000UL    // scan refuse (station encore en connexion) : nouvel essai
 #define MQTT_RETRY_MIN_MS    5000UL
 #define MQTT_RETRY_MAX_MS    60000UL
@@ -360,12 +359,20 @@ static void pollWifiScan(uint32_t ms)
         WiFi.scanDelete();
         return;
     }
-    int count = n < WIFI_SCAN_MAX ? n : WIFI_SCAN_MAX;
-    String names[WIFI_SCAN_MAX];
-    const char *visible[WIFI_SCAN_MAX] = {};
-    for (int i = 0; i < count; i++) {
-        names[i] = WiFi.SSID(i);
-        visible[i] = names[i].c_str();
+    // Tous les resultats sont examines : un resultat par point d'acces (BSSID),
+    // si bien qu'un bureau a plusieurs bornes en aligne vite des dizaines. Seuls
+    // les SSID declares sont retenus, chacun une fois.
+    const char *visible[WIFI_NETWORK_COUNT] = {};
+    bool seen[WIFI_NETWORK_COUNT] = {};
+    int count = 0;
+    for (int i = 0; i < n && count < WIFI_NETWORK_COUNT; i++) {
+        String ssid = WiFi.SSID(i);
+        for (int j = 0; j < WIFI_NETWORK_COUNT; j++) {
+            if (!seen[j] && ssid == WIFI_NETWORKS[j].ssid) {
+                seen[j] = true;
+                visible[count++] = WIFI_NETWORKS[j].ssid;
+            }
+        }
     }
     WiFi.scanDelete();
     int k = wifi::pickNextVisible(WIFI_NETWORKS, WIFI_NETWORK_COUNT, visible, count, wifiFailed);
@@ -414,7 +421,9 @@ static void handleWifi(uint32_t ms)
         if (wifiTried >= 0 && WIFI_NETWORK_COUNT > 1) {
             // Visible mais injoignable (mot de passe, portail, DHCP...) : le
             // prochain scan essaiera le reseau suivant
-            Serial.printf("Echec sur %s : essai du reseau suivant\n", WIFI_NETWORKS[wifiTried].ssid);
+            int reason = wifiDisconnectReason;
+            Serial.printf("Echec sur %s (%s) : essai du reseau suivant\n", WIFI_NETWORKS[wifiTried].ssid,
+                          reason ? WiFi.disconnectReasonName((wifi_err_reason_t)reason) : "sans deconnexion");
             wifiFailed |= 1u << wifiTried;
             wifiTried = -1;
         }
