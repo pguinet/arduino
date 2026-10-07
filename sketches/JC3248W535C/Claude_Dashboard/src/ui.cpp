@@ -127,8 +127,12 @@ void ui_create() {
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scroll_dir(list, LV_DIR_VER);
 
+    // Sans serveur recu : etat reseau sur trois lignes (diagnostic sans cable)
     lblEmpty = mkLabel(scr, &lv_font_montserrat_18, COLOR_DIM);
-    lv_label_set_text(lblEmpty, "En attente de donnees...");
+    lv_label_set_long_mode(lblEmpty, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(lblEmpty, 460);
+    lv_obj_set_style_text_align(lblEmpty, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(lblEmpty, "");
     lv_obj_align(lblEmpty, LV_ALIGN_CENTER, 0, 60);
 
     // Bandeau d'alerte (serveur injoignable), cache par defaut
@@ -216,7 +220,7 @@ static void addCard(const Row &r, bool showHost) {
     setPercent(bar, pct, s.ctx);
 }
 
-void ui_render(const Dashboard &d, time_t now, bool mqttOk) {
+void ui_render(const Dashboard &d, time_t now, const net::Status &netStatus) {
     Limits lim = d.limits(now);
     renderLimit(bar5h, pct5h, reset5h, lim.h5, lim.h5Reset, false);
     renderLimit(bar7d, pct7d, reset7d, lim.d7, lim.d7Reset, true);
@@ -237,16 +241,16 @@ void ui_render(const Dashboard &d, time_t now, bool mqttOk) {
     lv_obj_update_layout(list);
     lv_obj_scroll_to_y(list, scroll, LV_ANIM_OFF);
 
-    lv_label_set_text(lblEmpty,
-                      d.hostCount() == 0 ? "En attente de donnees..." : "Aucune session active");
+    if (d.hostCount()) lv_label_set_text(lblEmpty, "Aucune session active");
     if (n == 0) lv_obj_clear_flag(lblEmpty, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(lblEmpty, LV_OBJ_FLAG_HIDDEN);
 
-    ui_tick(d, now, mqttOk);
+    ui_tick(d, now, netStatus);
 }
 
-void ui_tick(const Dashboard &d, time_t now, bool mqttOk) {
+void ui_tick(const Dashboard &d, time_t now, const net::Status &netStatus) {
     char buf[48];
+    bool mqttOk = netStatus.mqtt == net::MqttPhase::Connected;
     if (now > CLOCK_VALID_AFTER) {
         struct tm tm;
         localtime_r(&now, &tm);
@@ -266,6 +270,12 @@ void ui_tick(const Dashboard &d, time_t now, bool mqttOk) {
         }
         formatDuration(now - durSince[i], buf, sizeof buf);
         setText(durLabels[i], buf);
+    }
+
+    if (!d.hostCount()) {
+        char status[192];
+        net::format(netStatus, status, sizeof status);
+        setText(lblEmpty, status);
     }
 
     int64_t stale = d.hostCount() ? d.staleSeconds(now) : 0;

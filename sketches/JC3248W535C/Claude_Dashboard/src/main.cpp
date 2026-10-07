@@ -29,6 +29,7 @@
 #include "credentials.h"
 #include "beep.h"
 #include "dash_model.h"
+#include "net_status.h"
 #include "ui.h"
 #include "wifi_pick.h"
 
@@ -95,6 +96,8 @@ static bool renderNeeded = false;
 static dash::Alert pendingAlert = dash::Alert::None;
 static uint32_t lastActivityMs = 0;  // dernier toucher, alerte, fin de la derniere session ou demarrage
 static bool screenOn = true;
+static net::Status netStatus;  // diagnostic a l'ecran tant qu'aucun serveur n'est recu
+static volatile int wifiDisconnectReason = 0;  // ecrit par la tache d'evenements WiFi
 
 static bool clockValid() { return time(nullptr) > CLOCK_VALID_AFTER; }
 
@@ -243,6 +246,7 @@ static bool mqttConnect()
     esp_task_wdt_reset();
     if (!resolved) {
         Serial.printf("MQTT : echec DNS du broker apres %lu ms\n", (unsigned long)tDns);
+        netStatus.mqtt = net::MqttPhase::DnsFailed;
         return false;  // meme backoff qu'un echec de connexion
     }
     static bool dnsShown = false;
@@ -257,6 +261,9 @@ static bool mqttConnect()
         int code = tls.lastError(err, sizeof err);
         Serial.printf("MQTT echec rc=%d apres %lu ms (TLS %d : %s)\n", mqtt.state(),
                       (unsigned long)(millis() - t0), code, code ? err : "-");
+        netStatus.mqtt = net::MqttPhase::ConnectFailed;
+        netStatus.mqttRc = mqtt.state();
+        netStatus.tlsError = code;
         return false;
     }
     Serial.printf("MQTT connecte en %lu ms (client %.8s...)\n", (unsigned long)(millis() - t0),
@@ -296,15 +303,23 @@ static constexpr int WIFI_NETWORK_COUNT = sizeof(WIFI_NETWORKS) / sizeof(WIFI_NE
 static bool wifiScanning = false;
 static uint32_t wifiScanStartMs = 0;
 
+static void setWifiConnecting(const char *ssid)
+{
+    netStatus.wifi = net::WifiPhase::Connecting;
+    strlcpy(netStatus.ssid, ssid, sizeof netStatus.ssid);
+}
+
 // Un seul reseau : begin() direct (marche aussi avec un SSID cache). Sinon scan
 // asynchrone, conclu par pollWifiScan() ; en cas d'echec, le cycle de 30 s de
 // handleWifi() relance.
 static void startWifi(uint32_t ms)
 {
     if (WIFI_NETWORK_COUNT == 1) {
+        setWifiConnecting(WIFI_NETWORKS[0].ssid);
         WiFi.begin(WIFI_NETWORKS[0].ssid, WIFI_NETWORKS[0].password);
         return;
     }
+    netStatus.wifi = net::WifiPhase::Scanning;
     if (WiFi.scanNetworks(true) == WIFI_SCAN_FAILED) {
         Serial.println("Scan WiFi impossible");
         return;
@@ -335,9 +350,12 @@ static void pollWifiScan(uint32_t ms)
     int k = wifi::pickFirstVisible(WIFI_NETWORKS, WIFI_NETWORK_COUNT, visible, count);
     if (k < 0) {
         Serial.printf("Aucun reseau connu parmi %d visibles\n", n);
+        netStatus.wifi = net::WifiPhase::NoKnownNetwork;
+        netStatus.visibleCount = n;
         return;
     }
     Serial.printf("Reseau connu trouve : %s\n", WIFI_NETWORKS[k].ssid);
+    setWifiConnecting(WIFI_NETWORKS[k].ssid);
     WiFi.begin(WIFI_NETWORKS[k].ssid, WIFI_NETWORKS[k].password);
 }
 
@@ -459,11 +477,15 @@ static void handleMqtt(uint32_t ms)
         // Sans WiFi, la socket TLS ne le verrait qu'au keepalive (jusqu'a 90 s).
         mqtt.disconnect();
         mqttUp = false;
+        netStatus.mqtt = net::MqttPhase::Waiting;
         Serial.println("MQTT deconnecte (WiFi perdu)");
     }
     if (mqttUp) {
         if (mqtt.loop()) return;
         mqttUp = false;
+        netStatus.mqtt = net::MqttPhase::ConnectFailed;
+        netStatus.mqttRc = mqtt.state();
+        netStatus.tlsError = 0;
         Serial.printf("MQTT deconnecte (rc=%d)\n", mqtt.state());
         retryDelay = MQTT_RETRY_MIN_MS;
         lastAttempt = ms;
@@ -482,6 +504,7 @@ static void handleMqtt(uint32_t ms)
 
     mqttUp = mqttConnect();
     if (mqttUp) {
+        netStatus.mqtt = net::MqttPhase::Connected;
         retryDelay = MQTT_RETRY_MIN_MS;
     } else {
         retryDelay = retryDelay ? retryDelay * 2 : MQTT_RETRY_MIN_MS;
@@ -489,6 +512,33 @@ static void handleMqtt(uint32_t ms)
         Serial.printf("MQTT : nouvelle tentative dans %lu s\n", (unsigned long)(retryDelay / 1000));
     }
     lastAttempt = millis();  // la tentative elle-meme peut durer plusieurs secondes
+}
+
+// Partie de l'etat reseau lue chaque seconde ; les phases de scan/connexion
+// sont posees par startWifi()/pollWifiScan(), celles de MQTT par handleMqtt().
+static void refreshNetStatus(uint32_t ms)
+{
+    static uint32_t wifiUpSince = 0;
+    bool up = WiFi.status() == WL_CONNECTED;
+    bool wasUp = netStatus.wifi == net::WifiPhase::Connected;
+    if (up && !wasUp) {
+        wifiUpSince = ms;
+        wifiDisconnectReason = 0;
+        netStatus.wifi = net::WifiPhase::Connected;
+    }
+    if (!up && wasUp) netStatus.wifi = net::WifiPhase::Connecting;  // reconnexion du driver
+    if (up) {
+        strlcpy(netStatus.ssid, WiFi.SSID().c_str(), sizeof netStatus.ssid);
+        strlcpy(netStatus.ip, WiFi.localIP().toString().c_str(), sizeof netStatus.ip);
+        netStatus.rssi = WiFi.RSSI();
+    }
+    int reason = wifiDisconnectReason;
+    netStatus.disconnectReason = reason;
+    strlcpy(netStatus.disconnectReasonName,
+            reason ? WiFi.disconnectReasonName((wifi_err_reason_t)reason) : "",
+            sizeof netStatus.disconnectReasonName);
+    netStatus.clockOk = clockValid();
+    netStatus.clockWaitS = up ? (ms - wifiUpSince) / 1000 : 0;
 }
 
 void setup()
@@ -519,16 +569,24 @@ void setup()
 
     bsp_display_lock(0);
     ui_create();
-    ui_render(dashboard, time(nullptr), false);
+    ui_render(dashboard, time(nullptr), netStatus);
     bsp_display_unlock();
     printHeap("UI prete");
 
     // WiFi et NTP non bloquants : loop() suit la connexion.
+    WiFi.onEvent(
+        [](WiFiEvent_t, WiFiEventInfo_t info) {
+            // ASSOC_LEAVE vient de notre propre disconnect() : il masquerait la vraie cause
+            uint8_t reason = info.wifi_sta_disconnected.reason;
+            if (reason != WIFI_REASON_ASSOC_LEAVE) wifiDisconnectReason = reason;
+        },
+        ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
     WiFi.mode(WIFI_STA);
     startWifi(millis());
     configTzTime(TZ_PARIS, "pool.ntp.org", "time.google.com");
 
     credentialsOk = checkCredentials();
+    if (!credentialsOk) netStatus.mqtt = net::MqttPhase::BadCredentials;
     tls.setCACert(DASH_MQTT_CA_CERT);
     tls.setCertificate(DASH_MQTT_CLIENT_CERT);
     tls.setPrivateKey(DASH_MQTT_CLIENT_KEY);
@@ -567,7 +625,7 @@ void loop()
     if (renderNeeded) {
         renderNeeded = false;
         bsp_display_lock(0);
-        ui_render(dashboard, time(nullptr), mqttUp);
+        ui_render(dashboard, time(nullptr), netStatus);
         bsp_display_unlock();
     }
     if (pendingAlert != dash::Alert::None) {
@@ -582,8 +640,9 @@ void loop()
     if (ms - lastTick >= 1000) {
         lastTick = ms;
         expireHosts();
+        refreshNetStatus(ms);
         bsp_display_lock(0);
-        ui_tick(dashboard, time(nullptr), mqttUp);
+        ui_tick(dashboard, time(nullptr), netStatus);
         bsp_display_unlock();
         updateScreen();
     }
