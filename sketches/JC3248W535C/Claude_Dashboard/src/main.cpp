@@ -19,6 +19,7 @@
 #include <esp_heap_caps.h>
 #include <esp_random.h>
 #include <esp_task_wdt.h>
+#include <esp_wifi.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/x509_crt.h>
 #include <lvgl.h>
@@ -29,6 +30,7 @@
 #include "credentials.h"
 #include "beep.h"
 #include "dash_model.h"
+#include "net_status.h"
 #include "ui.h"
 #include "wifi_pick.h"
 
@@ -67,7 +69,7 @@
 #define MQTT_BUFFER_SIZE     4096
 #define WIFI_FORCE_AFTER_MS  30000UL   // reconnexion forcee apres 30 s sans WiFi
 #define WIFI_SCAN_TIMEOUT_MS 15000UL   // scan asynchrone abandonne au-dela
-#define WIFI_SCAN_MAX        32        // reseaux visibles examines au plus
+#define WIFI_SCAN_RETRY_MS   1000UL    // scan refuse (station encore en connexion) : nouvel essai
 #define MQTT_RETRY_MIN_MS    5000UL
 #define MQTT_RETRY_MAX_MS    60000UL
 #define CLOCK_SKEW_WARN_S    30
@@ -95,6 +97,8 @@ static bool renderNeeded = false;
 static dash::Alert pendingAlert = dash::Alert::None;
 static uint32_t lastActivityMs = 0;  // dernier toucher, alerte, fin de la derniere session ou demarrage
 static bool screenOn = true;
+static net::Status netStatus;  // diagnostic a l'ecran tant qu'aucun serveur n'est recu
+static volatile int wifiDisconnectReason = 0;  // ecrit par la tache d'evenements WiFi
 
 static bool clockValid() { return time(nullptr) > CLOCK_VALID_AFTER; }
 
@@ -243,6 +247,7 @@ static bool mqttConnect()
     esp_task_wdt_reset();
     if (!resolved) {
         Serial.printf("MQTT : echec DNS du broker apres %lu ms\n", (unsigned long)tDns);
+        netStatus.mqtt = net::MqttPhase::DnsFailed;
         return false;  // meme backoff qu'un echec de connexion
     }
     static bool dnsShown = false;
@@ -257,6 +262,9 @@ static bool mqttConnect()
         int code = tls.lastError(err, sizeof err);
         Serial.printf("MQTT echec rc=%d apres %lu ms (TLS %d : %s)\n", mqtt.state(),
                       (unsigned long)(millis() - t0), code, code ? err : "-");
+        netStatus.mqtt = net::MqttPhase::ConnectFailed;
+        netStatus.mqttRc = mqtt.state();
+        netStatus.tlsError = code;
         return false;
     }
     Serial.printf("MQTT connecte en %lu ms (client %.8s...)\n", (unsigned long)(millis() - t0),
@@ -278,7 +286,8 @@ static bool mqttConnect()
 }
 
 // Reseaux connus, par ordre de priorite : le premier visible au scan gagne
-// (l'ecran change de site, pas de course au meilleur signal).
+// (l'ecran change de site, pas de course au meilleur signal), sauf s'il vient
+// d'echouer : on passe alors au suivant visible (voir wifiFailed).
 static const wifi::Network WIFI_NETWORKS[] = {
     {WIFI_SSID, WIFI_PASSWORD},
 #ifdef WIFI_SSID_2
@@ -295,20 +304,46 @@ static constexpr int WIFI_NETWORK_COUNT = sizeof(WIFI_NETWORKS) / sizeof(WIFI_NE
 
 static bool wifiScanning = false;
 static uint32_t wifiScanStartMs = 0;
+static bool wifiScanRetry = false;  // scan refuse : a relancer apres WIFI_SCAN_RETRY_MS
+static int wifiTried = -1;         // index du reseau en cours de connexion (-1 : aucun)
+static unsigned wifiFailed = 0;    // bit k : reseau k visible mais connexion en echec
+
+// WiFi.disconnect() ne fait rien tant que la station n'est pas connectee : il
+// laisserait tourner une tentative en echec, que le core relance a chaque
+// deconnexion. esp_wifi_disconnect() l'interrompt (raison ASSOC_LEAVE, que le
+// core ne relance pas).
+static void stopWifiAttempt()
+{
+    esp_wifi_disconnect();
+}
+
+static void setWifiConnecting(const char *ssid)
+{
+    netStatus.wifi = net::WifiPhase::Connecting;
+    strlcpy(netStatus.ssid, ssid, sizeof netStatus.ssid);
+}
 
 // Un seul reseau : begin() direct (marche aussi avec un SSID cache). Sinon scan
-// asynchrone, conclu par pollWifiScan() ; en cas d'echec, le cycle de 30 s de
-// handleWifi() relance.
+// asynchrone, conclu par pollWifiScan() ; scan refuse par le driver : nouvel
+// essai apres 1 s, sinon le cycle de 30 s de handleWifi() relance.
 static void startWifi(uint32_t ms)
 {
     if (WIFI_NETWORK_COUNT == 1) {
+        setWifiConnecting(WIFI_NETWORKS[0].ssid);
         WiFi.begin(WIFI_NETWORKS[0].ssid, WIFI_NETWORKS[0].password);
         return;
     }
+    netStatus.wifi = net::WifiPhase::Scanning;
     if (WiFi.scanNetworks(true) == WIFI_SCAN_FAILED) {
-        Serial.println("Scan WiFi impossible");
+        // Station encore en connexion (l'arret d'une tentative est asynchrone) :
+        // le driver refuse le scan. On recoupe et on retente vite.
+        Serial.println("Scan WiFi impossible : nouvel essai dans 1 s");
+        stopWifiAttempt();
+        wifiScanRetry = true;
+        wifiScanStartMs = ms;
         return;
     }
+    wifiScanRetry = false;
     wifiScanning = true;
     wifiScanStartMs = ms;
     Serial.println("Scan WiFi...");
@@ -324,20 +359,32 @@ static void pollWifiScan(uint32_t ms)
         WiFi.scanDelete();
         return;
     }
-    int count = n < WIFI_SCAN_MAX ? n : WIFI_SCAN_MAX;
-    String names[WIFI_SCAN_MAX];
-    const char *visible[WIFI_SCAN_MAX] = {};
-    for (int i = 0; i < count; i++) {
-        names[i] = WiFi.SSID(i);
-        visible[i] = names[i].c_str();
+    // Tous les resultats sont examines : un resultat par point d'acces (BSSID),
+    // si bien qu'un bureau a plusieurs bornes en aligne vite des dizaines. Seuls
+    // les SSID declares sont retenus, chacun une fois.
+    const char *visible[WIFI_NETWORK_COUNT] = {};
+    bool seen[WIFI_NETWORK_COUNT] = {};
+    int count = 0;
+    for (int i = 0; i < n && count < WIFI_NETWORK_COUNT; i++) {
+        String ssid = WiFi.SSID(i);
+        for (int j = 0; j < WIFI_NETWORK_COUNT; j++) {
+            if (!seen[j] && ssid == WIFI_NETWORKS[j].ssid) {
+                seen[j] = true;
+                visible[count++] = WIFI_NETWORKS[j].ssid;
+            }
+        }
     }
     WiFi.scanDelete();
-    int k = wifi::pickFirstVisible(WIFI_NETWORKS, WIFI_NETWORK_COUNT, visible, count);
+    int k = wifi::pickNextVisible(WIFI_NETWORKS, WIFI_NETWORK_COUNT, visible, count, wifiFailed);
+    wifiTried = k;
     if (k < 0) {
         Serial.printf("Aucun reseau connu parmi %d visibles\n", n);
+        netStatus.wifi = net::WifiPhase::NoKnownNetwork;
+        netStatus.visibleCount = n;
         return;
     }
     Serial.printf("Reseau connu trouve : %s\n", WIFI_NETWORKS[k].ssid);
+    setWifiConnecting(WIFI_NETWORKS[k].ssid);
     WiFi.begin(WIFI_NETWORKS[k].ssid, WIFI_NETWORKS[k].password);
 }
 
@@ -351,18 +398,36 @@ static void handleWifi(uint32_t ms)
     bool connected = WiFi.status() == WL_CONNECTED;
     if (connected != wasConnected) {
         wasConnected = connected;
-        if (connected) Serial.printf("WiFi connecte a %s, IP %s\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
-        else Serial.println("WiFi perdu");
+        if (connected) {
+            Serial.printf("WiFi connecte a %s, IP %s\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+            wifiFailed = 0;
+        } else {
+            Serial.println("WiFi perdu");
+        }
         downSince = ms;
     }
     if (wifiScanning) {
         pollWifiScan(ms);
         return;
     }
+    if (wifiScanRetry && !connected) {
+        if (ms - wifiScanStartMs >= WIFI_SCAN_RETRY_MS) startWifi(ms);
+        return;
+    }
+    wifiScanRetry = false;
     if (!connected && ms - downSince >= WIFI_FORCE_AFTER_MS) {
         downSince = ms;
         Serial.println("WiFi absent depuis 30 s : reconnexion forcee");
-        WiFi.disconnect();
+        if (wifiTried >= 0 && WIFI_NETWORK_COUNT > 1) {
+            // Visible mais injoignable (mot de passe, portail, DHCP...) : le
+            // prochain scan essaiera le reseau suivant
+            int reason = wifiDisconnectReason;
+            Serial.printf("Echec sur %s (%s) : essai du reseau suivant\n", WIFI_NETWORKS[wifiTried].ssid,
+                          reason ? WiFi.disconnectReasonName((wifi_err_reason_t)reason) : "sans deconnexion");
+            wifiFailed |= 1u << wifiTried;
+            wifiTried = -1;
+        }
+        stopWifiAttempt();
         startWifi(ms);
     }
 }
@@ -459,11 +524,15 @@ static void handleMqtt(uint32_t ms)
         // Sans WiFi, la socket TLS ne le verrait qu'au keepalive (jusqu'a 90 s).
         mqtt.disconnect();
         mqttUp = false;
+        netStatus.mqtt = net::MqttPhase::Waiting;
         Serial.println("MQTT deconnecte (WiFi perdu)");
     }
     if (mqttUp) {
         if (mqtt.loop()) return;
         mqttUp = false;
+        netStatus.mqtt = net::MqttPhase::ConnectFailed;
+        netStatus.mqttRc = mqtt.state();
+        netStatus.tlsError = 0;
         Serial.printf("MQTT deconnecte (rc=%d)\n", mqtt.state());
         retryDelay = MQTT_RETRY_MIN_MS;
         lastAttempt = ms;
@@ -482,6 +551,7 @@ static void handleMqtt(uint32_t ms)
 
     mqttUp = mqttConnect();
     if (mqttUp) {
+        netStatus.mqtt = net::MqttPhase::Connected;
         retryDelay = MQTT_RETRY_MIN_MS;
     } else {
         retryDelay = retryDelay ? retryDelay * 2 : MQTT_RETRY_MIN_MS;
@@ -489,6 +559,33 @@ static void handleMqtt(uint32_t ms)
         Serial.printf("MQTT : nouvelle tentative dans %lu s\n", (unsigned long)(retryDelay / 1000));
     }
     lastAttempt = millis();  // la tentative elle-meme peut durer plusieurs secondes
+}
+
+// Partie de l'etat reseau lue chaque seconde ; les phases de scan/connexion
+// sont posees par startWifi()/pollWifiScan(), celles de MQTT par handleMqtt().
+static void refreshNetStatus(uint32_t ms)
+{
+    static uint32_t wifiUpSince = 0;
+    bool up = WiFi.status() == WL_CONNECTED;
+    bool wasUp = netStatus.wifi == net::WifiPhase::Connected;
+    if (up && !wasUp) {
+        wifiUpSince = ms;
+        wifiDisconnectReason = 0;
+        netStatus.wifi = net::WifiPhase::Connected;
+    }
+    if (!up && wasUp) netStatus.wifi = net::WifiPhase::Connecting;  // reconnexion du driver
+    if (up) {
+        strlcpy(netStatus.ssid, WiFi.SSID().c_str(), sizeof netStatus.ssid);
+        strlcpy(netStatus.ip, WiFi.localIP().toString().c_str(), sizeof netStatus.ip);
+        netStatus.rssi = WiFi.RSSI();
+    }
+    int reason = wifiDisconnectReason;
+    netStatus.disconnectReason = reason;
+    strlcpy(netStatus.disconnectReasonName,
+            reason ? WiFi.disconnectReasonName((wifi_err_reason_t)reason) : "",
+            sizeof netStatus.disconnectReasonName);
+    netStatus.clockOk = clockValid();
+    netStatus.clockWaitS = up ? (ms - wifiUpSince) / 1000 : 0;
 }
 
 void setup()
@@ -519,16 +616,24 @@ void setup()
 
     bsp_display_lock(0);
     ui_create();
-    ui_render(dashboard, time(nullptr), false);
+    ui_render(dashboard, time(nullptr), netStatus);
     bsp_display_unlock();
     printHeap("UI prete");
 
     // WiFi et NTP non bloquants : loop() suit la connexion.
+    WiFi.onEvent(
+        [](WiFiEvent_t, WiFiEventInfo_t info) {
+            // ASSOC_LEAVE vient de notre propre disconnect() : il masquerait la vraie cause
+            uint8_t reason = info.wifi_sta_disconnected.reason;
+            if (reason != WIFI_REASON_ASSOC_LEAVE) wifiDisconnectReason = reason;
+        },
+        ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
     WiFi.mode(WIFI_STA);
     startWifi(millis());
     configTzTime(TZ_PARIS, "pool.ntp.org", "time.google.com");
 
     credentialsOk = checkCredentials();
+    if (!credentialsOk) netStatus.mqtt = net::MqttPhase::BadCredentials;
     tls.setCACert(DASH_MQTT_CA_CERT);
     tls.setCertificate(DASH_MQTT_CLIENT_CERT);
     tls.setPrivateKey(DASH_MQTT_CLIENT_KEY);
@@ -567,7 +672,7 @@ void loop()
     if (renderNeeded) {
         renderNeeded = false;
         bsp_display_lock(0);
-        ui_render(dashboard, time(nullptr), mqttUp);
+        ui_render(dashboard, time(nullptr), netStatus);
         bsp_display_unlock();
     }
     if (pendingAlert != dash::Alert::None) {
@@ -582,8 +687,9 @@ void loop()
     if (ms - lastTick >= 1000) {
         lastTick = ms;
         expireHosts();
+        refreshNetStatus(ms);
         bsp_display_lock(0);
-        ui_tick(dashboard, time(nullptr), mqttUp);
+        ui_tick(dashboard, time(nullptr), netStatus);
         bsp_display_unlock();
         updateScreen();
     }

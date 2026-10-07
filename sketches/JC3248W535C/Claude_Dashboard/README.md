@@ -73,8 +73,13 @@ Serveur Linux (un ou plusieurs)                  Scaleway IoT Hub        Maison
   l'état, jauge de contexte. Au plus 16 cartes, puis « +N autres sessions ».
 - **Couleurs** : liseré et état rose = permission, orange = attente, bleu =
   travaille. Jauges : vert < 60 %, orange < 85 %, rose au-delà.
-- **Messages** : « En attente de donnees... » tant qu'aucun serveur n'a publié
-  (jusqu'à 20 s après le démarrage), « Aucune session active » ensuite.
+- **État réseau** tant qu'aucun serveur n'a publié (jusqu'à 20 s après le
+  démarrage) : trois lignes WiFi / Heure / MQTT, pour diagnostiquer sans câble.
+  Par exemple `WiFi : <ssid>  <ip>  -67 dBm`, `Heure : attente NTP (2 min)`,
+  `MQTT : attente heure`. Côté WiFi : scan en cours, `aucun reseau connu (N
+  visibles)`, ou `connexion a <ssid>, echec <raison> (<code>)` avec la raison
+  ESP-IDF de la dernière déconnexion (`AUTH_FAIL`, `NO_AP_FOUND`,
+  `4WAY_HANDSHAKE_TIMEOUT`…). « Aucune session active » ensuite.
 - **Bandeau rose « Serveur injoignable depuis N min »** et liste estompée quand
   le dernier snapshot a plus de 180 s (calculé depuis son horodatage `ts`).
 - **Serveur oublié après 1 h sans nouvelles** (agent planté, coupure réseau,
@@ -164,11 +169,18 @@ Macros requises (un `#error` explicite nomme celle qui manque) :
 jusqu'à 4 réseaux (`WIFI_SSID` puis `WIFI_SSID_2`…`_4`, chacun avec son mot de
 passe). Au démarrage, et après 30 s sans WiFi, l'écran lance un scan
 asynchrone et se connecte au **premier réseau déclaré qui est visible**. C'est
-l'ordre de déclaration qui fixe la priorité, pas la force du signal. Avec un
+l'ordre de déclaration qui fixe la priorité, pas la force du signal. Si le
+réseau choisi reste injoignable 30 s alors qu'il est visible (mot de passe
+refusé, portail captif, DHCP muet…), il est marqué en échec et le scan suivant
+prend le réseau visible d'après. Quand tous les réseaux visibles ont échoué, la
+tournée reprend au premier ; une connexion réussie efface les échecs. Avec un
 seul réseau, pas de scan : `WiFi.begin()` direct, ce qui marche aussi pour un
 SSID caché. Avec plusieurs, un SSID caché n'apparaît pas au scan et ne peut
 donc pas être choisi. Série : `Scan WiFi...`, `Reseau connu trouve : <ssid>`
-ou `Aucun reseau connu parmi N visibles` (nouvel essai 30 s plus tard).
+ou `Aucun reseau connu parmi N visibles` (nouvel essai 30 s plus tard), et
+`Echec sur <ssid> : essai du reseau suivant`. Si le driver refuse le scan
+(tentative précédente pas encore interrompue) : `Scan WiFi impossible : nouvel
+essai dans 1 s`.
 
 ### Conversion des PEM : `tools/pem2credentials.sh`
 
@@ -228,8 +240,8 @@ Délai de veille court pour les essais :
 ## Tests et qualité
 
 ```bash
-$PIO test -e native                     # dash_model : 62 tests Unity sur le PC
-$PIO check -e esp32s3 --skip-packages   # cppcheck sur main.cpp, ui.cpp, beep.cpp, dash_model
+$PIO test -e native                     # tests Unity sur le PC (dash_model, wifi_pick, net_status)
+$PIO check -e esp32s3 --skip-packages   # cppcheck sur main.cpp, ui.cpp, beep.cpp et lib/
 server/run-checks.sh                    # agent : ruff, mypy, pytest (Docker)
 server/dev/integration-test.sh          # agent + Mosquitto local (Docker)
 server/dev/integration-test-mtls.sh     # idem en mTLS sans retained (imite Scaleway)
@@ -248,7 +260,8 @@ Lire d'abord le moniteur série : chaque échec y est expliqué.
 | `#error "credentials.h : ... manquant"` à la compilation | macro absente, ou lien `src/credentials.h` cassé / relatif |
 | `ERREUR credentials.h : DASH_MQTT_... invalide (mbedTLS -0x....), MQTT desactive` (répété toutes les 60 s) | PEM mal converti (CRLF, ligne manquante, `\n` oublié) ou clé chiffrée : repasser par `tools/pem2credentials.sh` |
 | `Attention credentials.h : ..., N certificat(s) ignore(s)` | un bloc du PEM est illisible mais au moins un certificat a été lu : sans gravité si la connexion passe |
-| Pastille rouge, pas de ligne MQTT | WiFi absent, ou heure pas encore valide (NTP) : MQTT n'est tenté qu'avec une heure > 2024, nécessaire pour vérifier le certificat |
+| Pastille rouge, pas de ligne MQTT | WiFi absent, ou heure pas encore valide (NTP) : MQTT n'est tenté qu'avec une heure > 2024, nécessaire pour vérifier le certificat. L'état réseau à l'écran dit lequel |
+| Écran : `WiFi : <ssid> <ip>` mais `Heure : attente NTP` qui s'éternise | le réseau filtre NTP (UDP 123) ou impose un portail captif (WiFi invités) : l'ESP32 ne peut pas le valider. Utiliser un autre réseau (partage de connexion du téléphone dans `WIFI_SSID_n`) |
 | `MQTT echec rc=-2 ... (TLS -xxxx : texte)` | TCP/TLS : lire le texte mbedTLS. Certificat CA du hub, certificat/clé du device `ecran`, heure de la carte, nom d'hôte du hub |
 | `MQTT echec rc=-4` | pas de CONNACK dans les 5 s : hub lent ou injoignable |
 | `MQTT echec rc=5` (non autorisé) | Device ID ≠ celui du certificat, device désactivé, ou filtres de messages |
@@ -277,6 +290,8 @@ d'allocation TLS (`MQTT echec rc=-2 ... (TLS -32512 : SSL - Memory allocation fa
 | `src/ui.cpp` | interface LVGL (en-tête, quotas, cartes, bandeau) |
 | `src/beep.cpp` | bips I2S (NS4168) |
 | `lib/dash_model/` | modèle pur : parsing, agrégation, tri, transitions, helpers |
+| `lib/net_status/` | état réseau (WiFi, NTP, MQTT) et son texte à l'écran |
+| `lib/wifi_pick/` | choix du réseau WiFi parmi ceux configurés |
 | `test/` | tests natifs Unity |
 | `tools/pem2credentials.sh` | conversion PEM → bloc `credentials.h` |
 | `src/esp_bsp.c`, `src/lv_port.c`, `src/esp_lcd_*.c`, `include/` | pilotes écran/tactile (repris de NorthernMan54/JC3248W535EN) |

@@ -3,6 +3,7 @@
 
 using wifi::Network;
 using wifi::pickFirstVisible;
+using wifi::pickNextVisible;
 
 void setUp() {}
 void tearDown() {}
@@ -54,6 +55,50 @@ void test_null_known() {
     TEST_ASSERT_EQUAL_INT(-1, pickFirstVisible(nullptr, 0, visible, 1));
 }
 
+void test_next_skips_failed_network() {
+    // "maison" visible mais refuse : on passe a "bureau"
+    const char *visible[] = {"maison", "bureau", "telephone"};
+    unsigned failed = 1u << 0;
+    TEST_ASSERT_EQUAL_INT(1, pickNextVisible(KNOWN, 3, visible, 3, failed));
+    TEST_ASSERT_EQUAL_UINT(1u << 0, failed);
+}
+
+void test_next_walks_down_the_list() {
+    const char *visible[] = {"telephone", "maison", "bureau"};
+    unsigned failed = 0;
+    int k = pickNextVisible(KNOWN, 3, visible, 3, failed);
+    TEST_ASSERT_EQUAL_INT(0, k);
+    failed |= 1u << k;
+    k = pickNextVisible(KNOWN, 3, visible, 3, failed);
+    TEST_ASSERT_EQUAL_INT(1, k);
+    failed |= 1u << k;
+    k = pickNextVisible(KNOWN, 3, visible, 3, failed);
+    TEST_ASSERT_EQUAL_INT(2, k);
+}
+
+void test_next_restarts_when_all_visible_failed() {
+    // "telephone" absent : maison et bureau en echec => retour a maison
+    const char *visible[] = {"maison", "bureau"};
+    unsigned failed = (1u << 0) | (1u << 1);
+    TEST_ASSERT_EQUAL_INT(0, pickNextVisible(KNOWN, 3, visible, 2, failed));
+    TEST_ASSERT_EQUAL_UINT(0, failed);
+}
+
+void test_next_failed_but_invisible_is_kept() {
+    // Echec sur "maison", qui n'est plus visible : on garde la marque
+    const char *visible[] = {"bureau"};
+    unsigned failed = 1u << 0;
+    TEST_ASSERT_EQUAL_INT(1, pickNextVisible(KNOWN, 3, visible, 1, failed));
+    TEST_ASSERT_EQUAL_UINT(1u << 0, failed);
+}
+
+void test_next_no_known_network_visible() {
+    const char *visible[] = {"voisin"};
+    unsigned failed = 1u << 2;
+    TEST_ASSERT_EQUAL_INT(-1, pickNextVisible(KNOWN, 3, visible, 1, failed));
+    TEST_ASSERT_EQUAL_UINT(0, failed);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_first_declared_wins_over_scan_order);
@@ -63,5 +108,10 @@ int main() {
     RUN_TEST(test_exact_case_sensitive_match);
     RUN_TEST(test_empty_ssids_ignored);
     RUN_TEST(test_null_known);
+    RUN_TEST(test_next_skips_failed_network);
+    RUN_TEST(test_next_walks_down_the_list);
+    RUN_TEST(test_next_restarts_when_all_visible_failed);
+    RUN_TEST(test_next_failed_but_invisible_is_kept);
+    RUN_TEST(test_next_no_known_network_visible);
     return UNITY_END();
 }
