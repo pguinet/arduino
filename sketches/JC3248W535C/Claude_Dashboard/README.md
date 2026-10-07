@@ -178,7 +178,9 @@ seul réseau, pas de scan : `WiFi.begin()` direct, ce qui marche aussi pour un
 SSID caché. Avec plusieurs, un SSID caché n'apparaît pas au scan et ne peut
 donc pas être choisi. Série : `Scan WiFi...`, `Reseau connu trouve : <ssid>`
 ou `Aucun reseau connu parmi N visibles` (nouvel essai 30 s plus tard), et
-`Echec sur <ssid> : essai du reseau suivant`.
+`Echec sur <ssid> : essai du reseau suivant`. Si le driver refuse le scan
+(tentative précédente pas encore interrompue) : `Scan WiFi impossible : nouvel
+essai dans 1 s`.
 
 ### Conversion des PEM : `tools/pem2credentials.sh`
 

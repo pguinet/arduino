@@ -19,6 +19,7 @@
 #include <esp_heap_caps.h>
 #include <esp_random.h>
 #include <esp_task_wdt.h>
+#include <esp_wifi.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/x509_crt.h>
 #include <lvgl.h>
@@ -69,6 +70,7 @@
 #define WIFI_FORCE_AFTER_MS  30000UL   // reconnexion forcee apres 30 s sans WiFi
 #define WIFI_SCAN_TIMEOUT_MS 15000UL   // scan asynchrone abandonne au-dela
 #define WIFI_SCAN_MAX        32        // reseaux visibles examines au plus
+#define WIFI_SCAN_RETRY_MS   1000UL    // scan refuse (station encore en connexion) : nouvel essai
 #define MQTT_RETRY_MIN_MS    5000UL
 #define MQTT_RETRY_MAX_MS    60000UL
 #define CLOCK_SKEW_WARN_S    30
@@ -303,8 +305,18 @@ static constexpr int WIFI_NETWORK_COUNT = sizeof(WIFI_NETWORKS) / sizeof(WIFI_NE
 
 static bool wifiScanning = false;
 static uint32_t wifiScanStartMs = 0;
+static bool wifiScanRetry = false;  // scan refuse : a relancer apres WIFI_SCAN_RETRY_MS
 static int wifiTried = -1;         // index du reseau en cours de connexion (-1 : aucun)
 static unsigned wifiFailed = 0;    // bit k : reseau k visible mais connexion en echec
+
+// WiFi.disconnect() ne fait rien tant que la station n'est pas connectee : il
+// laisserait tourner une tentative en echec, que le core relance a chaque
+// deconnexion. esp_wifi_disconnect() l'interrompt (raison ASSOC_LEAVE, que le
+// core ne relance pas).
+static void stopWifiAttempt()
+{
+    esp_wifi_disconnect();
+}
 
 static void setWifiConnecting(const char *ssid)
 {
@@ -313,8 +325,8 @@ static void setWifiConnecting(const char *ssid)
 }
 
 // Un seul reseau : begin() direct (marche aussi avec un SSID cache). Sinon scan
-// asynchrone, conclu par pollWifiScan() ; en cas d'echec, le cycle de 30 s de
-// handleWifi() relance.
+// asynchrone, conclu par pollWifiScan() ; scan refuse par le driver : nouvel
+// essai apres 1 s, sinon le cycle de 30 s de handleWifi() relance.
 static void startWifi(uint32_t ms)
 {
     if (WIFI_NETWORK_COUNT == 1) {
@@ -324,9 +336,15 @@ static void startWifi(uint32_t ms)
     }
     netStatus.wifi = net::WifiPhase::Scanning;
     if (WiFi.scanNetworks(true) == WIFI_SCAN_FAILED) {
-        Serial.println("Scan WiFi impossible");
+        // Station encore en connexion (l'arret d'une tentative est asynchrone) :
+        // le driver refuse le scan. On recoupe et on retente vite.
+        Serial.println("Scan WiFi impossible : nouvel essai dans 1 s");
+        stopWifiAttempt();
+        wifiScanRetry = true;
+        wifiScanStartMs = ms;
         return;
     }
+    wifiScanRetry = false;
     wifiScanning = true;
     wifiScanStartMs = ms;
     Serial.println("Scan WiFi...");
@@ -385,6 +403,11 @@ static void handleWifi(uint32_t ms)
         pollWifiScan(ms);
         return;
     }
+    if (wifiScanRetry && !connected) {
+        if (ms - wifiScanStartMs >= WIFI_SCAN_RETRY_MS) startWifi(ms);
+        return;
+    }
+    wifiScanRetry = false;
     if (!connected && ms - downSince >= WIFI_FORCE_AFTER_MS) {
         downSince = ms;
         Serial.println("WiFi absent depuis 30 s : reconnexion forcee");
@@ -395,7 +418,7 @@ static void handleWifi(uint32_t ms)
             wifiFailed |= 1u << wifiTried;
             wifiTried = -1;
         }
-        WiFi.disconnect();
+        stopWifiAttempt();
         startWifi(ms);
     }
 }
