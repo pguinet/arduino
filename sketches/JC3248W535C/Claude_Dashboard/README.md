@@ -169,11 +169,16 @@ Macros requises (un `#error` explicite nomme celle qui manque) :
 jusqu'à 4 réseaux (`WIFI_SSID` puis `WIFI_SSID_2`…`_4`, chacun avec son mot de
 passe). Au démarrage, et après 30 s sans WiFi, l'écran lance un scan
 asynchrone et se connecte au **premier réseau déclaré qui est visible**. C'est
-l'ordre de déclaration qui fixe la priorité, pas la force du signal. Avec un
+l'ordre de déclaration qui fixe la priorité, pas la force du signal. Si le
+réseau choisi reste injoignable 30 s alors qu'il est visible (mot de passe
+refusé, portail captif, DHCP muet…), il est marqué en échec et le scan suivant
+prend le réseau visible d'après. Quand tous les réseaux visibles ont échoué, la
+tournée reprend au premier ; une connexion réussie efface les échecs. Avec un
 seul réseau, pas de scan : `WiFi.begin()` direct, ce qui marche aussi pour un
 SSID caché. Avec plusieurs, un SSID caché n'apparaît pas au scan et ne peut
 donc pas être choisi. Série : `Scan WiFi...`, `Reseau connu trouve : <ssid>`
-ou `Aucun reseau connu parmi N visibles` (nouvel essai 30 s plus tard).
+ou `Aucun reseau connu parmi N visibles` (nouvel essai 30 s plus tard), et
+`Echec sur <ssid> : essai du reseau suivant`.
 
 ### Conversion des PEM : `tools/pem2credentials.sh`
 

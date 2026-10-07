@@ -285,7 +285,8 @@ static bool mqttConnect()
 }
 
 // Reseaux connus, par ordre de priorite : le premier visible au scan gagne
-// (l'ecran change de site, pas de course au meilleur signal).
+// (l'ecran change de site, pas de course au meilleur signal), sauf s'il vient
+// d'echouer : on passe alors au suivant visible (voir wifiFailed).
 static const wifi::Network WIFI_NETWORKS[] = {
     {WIFI_SSID, WIFI_PASSWORD},
 #ifdef WIFI_SSID_2
@@ -302,6 +303,8 @@ static constexpr int WIFI_NETWORK_COUNT = sizeof(WIFI_NETWORKS) / sizeof(WIFI_NE
 
 static bool wifiScanning = false;
 static uint32_t wifiScanStartMs = 0;
+static int wifiTried = -1;         // index du reseau en cours de connexion (-1 : aucun)
+static unsigned wifiFailed = 0;    // bit k : reseau k visible mais connexion en echec
 
 static void setWifiConnecting(const char *ssid)
 {
@@ -347,7 +350,8 @@ static void pollWifiScan(uint32_t ms)
         visible[i] = names[i].c_str();
     }
     WiFi.scanDelete();
-    int k = wifi::pickFirstVisible(WIFI_NETWORKS, WIFI_NETWORK_COUNT, visible, count);
+    int k = wifi::pickNextVisible(WIFI_NETWORKS, WIFI_NETWORK_COUNT, visible, count, wifiFailed);
+    wifiTried = k;
     if (k < 0) {
         Serial.printf("Aucun reseau connu parmi %d visibles\n", n);
         netStatus.wifi = net::WifiPhase::NoKnownNetwork;
@@ -369,8 +373,12 @@ static void handleWifi(uint32_t ms)
     bool connected = WiFi.status() == WL_CONNECTED;
     if (connected != wasConnected) {
         wasConnected = connected;
-        if (connected) Serial.printf("WiFi connecte a %s, IP %s\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
-        else Serial.println("WiFi perdu");
+        if (connected) {
+            Serial.printf("WiFi connecte a %s, IP %s\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+            wifiFailed = 0;
+        } else {
+            Serial.println("WiFi perdu");
+        }
         downSince = ms;
     }
     if (wifiScanning) {
@@ -380,6 +388,13 @@ static void handleWifi(uint32_t ms)
     if (!connected && ms - downSince >= WIFI_FORCE_AFTER_MS) {
         downSince = ms;
         Serial.println("WiFi absent depuis 30 s : reconnexion forcee");
+        if (wifiTried >= 0 && WIFI_NETWORK_COUNT > 1) {
+            // Visible mais injoignable (mot de passe, portail, DHCP...) : le
+            // prochain scan essaiera le reseau suivant
+            Serial.printf("Echec sur %s : essai du reseau suivant\n", WIFI_NETWORKS[wifiTried].ssid);
+            wifiFailed |= 1u << wifiTried;
+            wifiTried = -1;
+        }
         WiFi.disconnect();
         startWifi(ms);
     }
