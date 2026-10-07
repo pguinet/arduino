@@ -373,6 +373,21 @@ pioarduino démarre le Task WDT à 5 s (`CONFIG_ESP_TASK_WDT_INIT=y`) : un
 `Claude_Dashboard` et `Transit_Tracker` ; `Train_Tracker`/`Bus_Tracker` (dépréciés)
 ont encore l'ancien code.
 
+### ⚠️ WiFi : `WiFi.disconnect()` n'interrompt pas une tentative en échec
+
+Dans arduino-esp32 3.x (pioarduino), `WiFi.disconnect()` **ne fait rien tant
+que la station n'est pas connectée** (`if (!connected()) return true;` dans
+`STAClass::disconnect()`). Or, après un mauvais mot de passe
+(`4WAY_HANDSHAKE_TIMEOUT`), le core relance lui-même `connect()` à chaque
+déconnexion : la station reste en connexion et **`WiFi.scanNetworks()` échoue
+indéfiniment** (`WIFI_SCAN_FAILED`), même une fois le réseau réparé.
+
+Pour abandonner une tentative (avant un scan ou un changement de réseau),
+appeler directement `esp_wifi_disconnect()` (`#include <esp_wifi.h>`) : il
+coupe aussi une connexion en cours, avec la raison `ASSOC_LEAVE` que le core ne
+relance pas. Le scan qui suit peut encore être refusé un court instant : le
+retenter après ~1 s. Corrigé dans `Claude_Dashboard`.
+
 **Sketches disponibles** :
 - `TouchTest/` - Test du tactile avec affichage des coordonnées en temps réel
 - `System_Monitor/` - Dashboard système avec jauges RAM, PSRAM, uptime
