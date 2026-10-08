@@ -9,6 +9,8 @@ namespace net {
 
 enum class WifiPhase { Scanning, NoKnownNetwork, Connecting, Connected };
 
+enum class ClockSource { None, Ntp, Https };
+
 enum class MqttPhase { Waiting, BadCredentials, DnsFailed, ConnectFailed, Connected };
 
 struct Status {
@@ -21,6 +23,8 @@ struct Status {
     int rssi = 0;
     bool clockOk = false;
     uint32_t clockWaitS = 0;          // depuis la connexion WiFi, heure toujours inconnue
+    ClockSource clockSource = ClockSource::None;
+    int httpsTimeFails = 0;           // repli HTTPS (NTP filtre) : echecs consecutifs
     MqttPhase mqtt = MqttPhase::Waiting;
     int mqttRc = 0;                   // ConnectFailed : PubSubClient::state()
     int tlsError = 0;                 // ConnectFailed : erreur mbedTLS, 0 = aucune
