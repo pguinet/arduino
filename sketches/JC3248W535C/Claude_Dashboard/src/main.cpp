@@ -18,11 +18,13 @@
 #include <PubSubClient.h>
 #include <esp_heap_caps.h>
 #include <esp_random.h>
+#include <esp_sntp.h>
 #include <esp_task_wdt.h>
 #include <esp_wifi.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/x509_crt.h>
 #include <lvgl.h>
+#include <sys/time.h>
 #include <time.h>
 #include "display.h"
 #include "esp_bsp.h"
@@ -30,6 +32,7 @@
 #include "credentials.h"
 #include "beep.h"
 #include "dash_model.h"
+#include "http_date.h"
 #include "net_status.h"
 #include "ui.h"
 #include "wifi_pick.h"
@@ -78,6 +81,16 @@
 #define TZ_PARIS             "CET-1CEST,M3.5.0,M10.5.0/3"
 static const time_t CLOCK_VALID_AFTER = 1704067200;  // 2024-01-01
 
+// Repli quand le reseau filtre NTP (UDP 123, WiFi invites) : l'heure est lue
+// dans l'en-tete Date d'une reponse HTTPS (443 passe partout).
+#ifndef TIME_HTTPS_HOST
+#define TIME_HTTPS_HOST      "www.google.com"
+#endif
+#define TIME_HTTPS_AFTER_MS  10000UL                 // NTP muet 10 s apres le WiFi
+#define TIME_HTTPS_RETRY_MS  60000UL                 // echec : nouvel essai
+#define TIME_HTTPS_RESYNC_MS (6UL * 3600UL * 1000UL) // sans NTP, recalage periodique (derive)
+#define TIME_HTTPS_READ_MS   5000UL                  // reponse attendue au plus
+
 // Pire cas d'une tentative MQTT (bloquante) : DNS ~10 s (resolu a part, WDT
 // reinitialise avant et apres), puis TCP 5 s + handshake TLS 8 s + CONNACK 5 s
 // = 18 s < WDT 30 s.
@@ -99,6 +112,8 @@ static uint32_t lastActivityMs = 0;  // dernier toucher, alerte, fin de la derni
 static bool screenOn = true;
 static net::Status netStatus;  // diagnostic a l'ecran tant qu'aucun serveur n'est recu
 static volatile int wifiDisconnectReason = 0;  // ecrit par la tache d'evenements WiFi
+
+static volatile bool ntpSynced = false;  // ecrit par la tache SNTP (lwIP)
 
 static bool clockValid() { return time(nullptr) > CLOCK_VALID_AFTER; }
 
@@ -233,6 +248,92 @@ static void onMessage(char *topic, byte *payload, unsigned int len)
     dash::Alert a = dashboard.apply(incoming, now, &changed);
     if (a == dash::Alert::Permission || pendingAlert == dash::Alert::None) pendingAlert = a;
     if (changed) renderNeeded = true;
+}
+
+// Heure lue dans l'en-tete Date d'une reponse HTTPS. Le certificat n'est pas
+// verifie (impossible sans heure) : la date n'est qu'une approximation a
+// +-1 s, et un faux serveur ne pourrait au pire que faire accepter un
+// certificat expire du hub. Pire cas : TCP 5 s + TLS 8 s + reponse 5 s < WDT.
+static bool syncClockHttps()
+{
+    esp_task_wdt_reset();
+    NetworkClientSecure client;
+    client.setInsecure();
+    client.setConnectionTimeout(TCP_CONNECT_TIMEOUT_MS);
+    client.setHandshakeTimeout(TLS_HANDSHAKE_TIMEOUT_S);
+    uint32_t t0 = millis();
+    if (!client.connect(TIME_HTTPS_HOST, 443)) {
+        Serial.printf("Heure HTTPS : connexion a %s impossible\n", TIME_HTTPS_HOST);
+        esp_task_wdt_reset();
+        return false;
+    }
+    esp_task_wdt_reset();
+    client.print("HEAD / HTTP/1.1\r\nHost: " TIME_HTTPS_HOST "\r\nConnection: close\r\n\r\n");
+
+    char line[128];
+    size_t len = 0;
+    time_t t = 0;
+    bool found = false;
+    uint32_t start = millis();
+    while (!found && millis() - start < TIME_HTTPS_READ_MS && (client.connected() || client.available())) {
+        int c = client.read();
+        if (c < 0) {
+            delay(10);
+            continue;
+        }
+        if (c != '\n') {
+            if (len < sizeof line - 1) line[len++] = (char)c;
+            continue;
+        }
+        line[len] = 0;
+        if (len == 0 || (len == 1 && line[0] == '\r')) break;  // fin des en-tetes
+        found = httpdate::parseHeaderLine(line, &t);
+        len = 0;
+    }
+    client.stop();
+    esp_task_wdt_reset();
+    if (!found || t <= CLOCK_VALID_AFTER) {
+        Serial.printf("Heure HTTPS : pas d'en-tete Date valide de %s\n", TIME_HTTPS_HOST);
+        return false;
+    }
+    // La date est celle de l'envoi de la reponse : compter la moitie de l'aller-retour.
+    struct timeval tv = {};
+    tv.tv_sec = t + (time_t)((millis() - t0) / 2000);
+    settimeofday(&tv, nullptr);
+    Serial.printf("Heure HTTPS : recue de %s en %lu ms (NTP muet)\n", TIME_HTTPS_HOST,
+                  (unsigned long)(millis() - t0));
+    return true;
+}
+
+// Repli HTTPS tant que NTP n'a rien donne : d'abord 10 s apres le WiFi, puis
+// toutes les minutes en cas d'echec, et toutes les 6 h pour rattraper la derive.
+static void handleClockFallback(uint32_t ms)
+{
+    static uint32_t wifiUpAt = 0;
+    static bool wifiWasUp = false;
+    static uint32_t lastAttempt = 0;
+    static uint32_t nextDelay = 0;
+
+    bool wifiUp = WiFi.status() == WL_CONNECTED;
+    if (wifiUp && !wifiWasUp) {
+        wifiUpAt = ms;
+        nextDelay = 0;
+        lastAttempt = ms;
+    }
+    wifiWasUp = wifiUp;
+    if (!wifiUp || ntpSynced) return;
+    if (!clockValid() && ms - wifiUpAt < TIME_HTTPS_AFTER_MS) return;  // laisser sa chance a NTP
+    if (ms - lastAttempt < nextDelay) return;
+
+    if (syncClockHttps()) {
+        netStatus.clockSource = net::ClockSource::Https;
+        netStatus.httpsTimeFails = 0;
+        nextDelay = TIME_HTTPS_RESYNC_MS;
+    } else {
+        netStatus.httpsTimeFails++;
+        nextDelay = TIME_HTTPS_RETRY_MS;
+    }
+    lastAttempt = millis();
 }
 
 static bool mqttConnect()
@@ -585,6 +686,7 @@ static void refreshNetStatus(uint32_t ms)
             reason ? WiFi.disconnectReasonName((wifi_err_reason_t)reason) : "",
             sizeof netStatus.disconnectReasonName);
     netStatus.clockOk = clockValid();
+    if (ntpSynced) netStatus.clockSource = net::ClockSource::Ntp;
     netStatus.clockWaitS = up ? (ms - wifiUpSince) / 1000 : 0;
 }
 
@@ -620,7 +722,7 @@ void setup()
     bsp_display_unlock();
     printHeap("UI prete");
 
-    // WiFi et NTP non bloquants : loop() suit la connexion.
+    // WiFi et NTP non bloquants : loop() suit la connexion (repli HTTPS si NTP filtre).
     WiFi.onEvent(
         [](WiFiEvent_t, WiFiEventInfo_t info) {
             // ASSOC_LEAVE vient de notre propre disconnect() : il masquerait la vraie cause
@@ -630,6 +732,7 @@ void setup()
         ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
     WiFi.mode(WIFI_STA);
     startWifi(millis());
+    sntp_set_time_sync_notification_cb([](struct timeval *) { ntpSynced = true; });
     configTzTime(TZ_PARIS, "pool.ntp.org", "time.google.com");
 
     credentialsOk = checkCredentials();
@@ -657,9 +760,10 @@ void loop()
     uint32_t ms = millis();
 
     handleWifi(ms);
+    handleClockFallback(ms);
 
     static bool ntpShown = false;
-    if (!ntpShown && clockValid()) {
+    if (!ntpShown && ntpSynced) {
         ntpShown = true;
         time_t now = time(nullptr);
         struct tm tm;
