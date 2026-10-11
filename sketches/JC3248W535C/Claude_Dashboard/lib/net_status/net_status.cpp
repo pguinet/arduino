@@ -50,18 +50,27 @@ void addWifi(Writer &w, const Status &s)
 void addClock(Writer &w, const Status &s)
 {
     if (s.clockOk) {
-        w.add("Heure : OK");
-        return;
+        switch (s.clockSource) {
+        case ClockSource::Ntp:
+            w.add("Heure : OK (NTP)");
+            return;
+        case ClockSource::Https:
+            w.add("Heure : OK (HTTPS, NTP filtre)");
+            return;
+        case ClockSource::None:
+            w.add("Heure : OK");
+            return;
+        }
     }
     if (s.wifi != WifiPhase::Connected) {
         w.add("Heure : attente WiFi");
         return;
     }
-    if (s.clockWaitS < 60) {
+    if (s.clockWaitS < 60)
         w.add("Heure : attente NTP (%lu s)", (unsigned long)s.clockWaitS);
-        return;
-    }
-    w.add("Heure : attente NTP (%lu min)", (unsigned long)(s.clockWaitS / 60));
+    else
+        w.add("Heure : attente NTP (%lu min)", (unsigned long)(s.clockWaitS / 60));
+    if (s.httpsTimeFails) w.add(", HTTPS echec x%d", s.httpsTimeFails);
 }
 
 void addMqtt(Writer &w, const Status &s)

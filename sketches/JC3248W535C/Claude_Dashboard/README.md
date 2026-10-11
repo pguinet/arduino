@@ -75,8 +75,9 @@ Serveur Linux (un ou plusieurs)                  Scaleway IoT Hub        Maison
   travaille. Jauges : vert < 60 %, orange < 85 %, rose au-delà.
 - **État réseau** tant qu'aucun serveur n'a publié (jusqu'à 20 s après le
   démarrage) : trois lignes WiFi / Heure / MQTT, pour diagnostiquer sans câble.
-  Par exemple `WiFi : <ssid>  <ip>  -67 dBm`, `Heure : attente NTP (2 min)`,
-  `MQTT : attente heure`. Côté WiFi : scan en cours, `aucun reseau connu (N
+  Par exemple `WiFi : <ssid>  <ip>  -67 dBm`, `Heure : attente NTP (2 min)`
+  (suivi de `, HTTPS echec xN` si le repli échoue aussi), `Heure : OK (NTP)`
+  ou `Heure : OK (HTTPS, NTP filtre)`, `MQTT : attente heure`. Côté WiFi : scan en cours, `aucun reseau connu (N
   visibles)`, ou `connexion a <ssid>, echec <raison> (<code>)` avec la raison
   ESP-IDF de la dernière déconnexion (`AUTH_FAIL`, `NO_AP_FOUND`,
   `4WAY_HANDSHAKE_TIMEOUT`…). « Aucune session active » ensuite.
@@ -228,7 +229,8 @@ toujours bornée dans le temps (jamais d'accès direct au port série, cf.
 timeout 40 script -qfc "$PIO device monitor -e esp32s3" capture.log < /dev/null
 ```
 
-Démarrage normal : `WiFi connecte a <ssid>, IP ...`, `NTP synchronise : ...`,
+Démarrage normal : `WiFi connecte a <ssid>, IP ...`, `NTP synchronise : ...`
+(ou, sur un réseau qui filtre NTP, `Heure HTTPS : recue de www.google.com en ... ms`),
 `MQTT connecte en ... ms (client xxxxxxxx...)`, `[TLS connecte] heap interne ...`,
 `Abonne a claude-dash/+/state (QoS 0) ...`, puis les cartes au premier
 heartbeat (≤ heartbeat de l'agent, 20 s par défaut).
@@ -261,7 +263,8 @@ Lire d'abord le moniteur série : chaque échec y est expliqué.
 | `ERREUR credentials.h : DASH_MQTT_... invalide (mbedTLS -0x....), MQTT desactive` (répété toutes les 60 s) | PEM mal converti (CRLF, ligne manquante, `\n` oublié) ou clé chiffrée : repasser par `tools/pem2credentials.sh` |
 | `Attention credentials.h : ..., N certificat(s) ignore(s)` | un bloc du PEM est illisible mais au moins un certificat a été lu : sans gravité si la connexion passe |
 | Pastille rouge, pas de ligne MQTT | WiFi absent, ou heure pas encore valide (NTP) : MQTT n'est tenté qu'avec une heure > 2024, nécessaire pour vérifier le certificat. L'état réseau à l'écran dit lequel |
-| Écran : `WiFi : <ssid> <ip>` mais `Heure : attente NTP` qui s'éternise | le réseau filtre NTP (UDP 123) ou impose un portail captif (WiFi invités) : l'ESP32 ne peut pas le valider. Utiliser un autre réseau (partage de connexion du téléphone dans `WIFI_SSID_n`) |
+| Écran : `Heure : OK (HTTPS, NTP filtre)` | le réseau filtre NTP (UDP 123, WiFi invités) : l'heure vient de l'en-tête `Date` d'une requête HTTPS vers `TIME_HTTPS_HOST` (`www.google.com` par défaut), 10 s après le WiFi si NTP n'a rien donné, puis toutes les 6 h. Précision ~1 s, suffisante pour TLS et l'âge des snapshots. Certificat non vérifié (impossible sans heure) : un faux serveur ne pourrait que fausser l'heure |
+| Écran : `Heure : attente NTP (...), HTTPS echec xN` | NTP **et** le repli HTTPS échouent : portail captif à valider (l'ESP32 ne peut pas), ou `TIME_HTTPS_HOST` bloqué. Utiliser un autre réseau (partage de connexion du téléphone dans `WIFI_SSID_n`) |
 | `MQTT echec rc=-2 ... (TLS -xxxx : texte)` | TCP/TLS : lire le texte mbedTLS. Certificat CA du hub, certificat/clé du device `ecran`, heure de la carte, nom d'hôte du hub |
 | `MQTT echec rc=-4` | pas de CONNACK dans les 5 s : hub lent ou injoignable |
 | `MQTT echec rc=5` (non autorisé) | Device ID ≠ celui du certificat, device désactivé, ou filtres de messages |
@@ -286,11 +289,12 @@ d'allocation TLS (`MQTT echec rc=-2 ... (TLS -32512 : SSL - Memory allocation fa
 
 | Chemin | Rôle |
 |---|---|
-| `src/main.cpp` | WiFi, NTP, MQTT/TLS, watchdog, alertes, veille |
+| `src/main.cpp` | WiFi, NTP (repli HTTPS), MQTT/TLS, watchdog, alertes, veille |
 | `src/ui.cpp` | interface LVGL (en-tête, quotas, cartes, bandeau) |
 | `src/beep.cpp` | bips I2S (NS4168) |
 | `lib/dash_model/` | modèle pur : parsing, agrégation, tri, transitions, helpers |
 | `lib/net_status/` | état réseau (WiFi, NTP, MQTT) et son texte à l'écran |
+| `lib/http_date/` | lecture de l'en-tête HTTP `Date` (repli quand NTP est filtré) |
 | `lib/wifi_pick/` | choix du réseau WiFi parmi ceux configurés |
 | `test/` | tests natifs Unity |
 | `tools/pem2credentials.sh` | conversion PEM → bloc `credentials.h` |

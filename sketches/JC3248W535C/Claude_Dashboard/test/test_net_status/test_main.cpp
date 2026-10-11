@@ -88,6 +88,9 @@ void test_clock_wait_in_seconds_then_minutes() {
     s.clockWaitS = 150;
     format(s, out, sizeof out);
     TEST_ASSERT_EQUAL_STRING("Heure : attente NTP (2 min)", line(1));
+    s.httpsTimeFails = 3;
+    format(s, out, sizeof out);
+    TEST_ASSERT_EQUAL_STRING("Heure : attente NTP (2 min), HTTPS echec x3", line(1));
 }
 
 void test_clock_ok() {
@@ -95,6 +98,12 @@ void test_clock_ok() {
     s.clockOk = true;
     format(s, out, sizeof out);
     TEST_ASSERT_EQUAL_STRING("Heure : OK", line(1));
+    s.clockSource = ClockSource::Ntp;
+    format(s, out, sizeof out);
+    TEST_ASSERT_EQUAL_STRING("Heure : OK (NTP)", line(1));
+    s.clockSource = ClockSource::Https;
+    format(s, out, sizeof out);
+    TEST_ASSERT_EQUAL_STRING("Heure : OK (HTTPS, NTP filtre)", line(1));
 }
 
 void test_mqtt_waits_for_clock() {
