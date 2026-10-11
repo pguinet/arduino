@@ -253,10 +253,18 @@ static void onMessage(char *topic, byte *payload, unsigned int len)
 // Heure lue dans l'en-tete Date d'une reponse HTTPS. Le certificat n'est pas
 // verifie (impossible sans heure) : la date n'est qu'une approximation a
 // +-1 s, et un faux serveur ne pourrait au pire que faire accepter un
-// certificat expire du hub. Pire cas : TCP 5 s + TLS 8 s + reponse 5 s < WDT.
+// certificat expire du hub. DNS a part comme pour MQTT (WDT reinitialise
+// apres, resultat en cache lwIP), puis TCP 5 s + TLS 8 s + reponse 5 s < WDT.
 static bool syncClockHttps()
 {
     esp_task_wdt_reset();
+    IPAddress ip;
+    bool resolved = WiFi.hostByName(TIME_HTTPS_HOST, ip);
+    esp_task_wdt_reset();
+    if (!resolved) {
+        Serial.printf("Heure HTTPS : echec DNS de %s\n", TIME_HTTPS_HOST);
+        return false;
+    }
     NetworkClientSecure client;
     client.setInsecure();
     client.setConnectionTimeout(TCP_CONNECT_TIMEOUT_MS);
