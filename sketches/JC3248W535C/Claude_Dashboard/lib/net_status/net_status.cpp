@@ -9,8 +9,8 @@ namespace {
 
 // Ajout borne a `out` : la sortie reste terminee par 0 meme tronquee.
 struct Writer {
-    char *out;
-    size_t len;
+    char *out = nullptr;
+    size_t len = 0;
     size_t pos = 0;
 
     void add(const char *fmt, ...) __attribute__((format(printf, 2, 3)))

@@ -240,6 +240,8 @@ void ui_render(const Dashboard &d, time_t now, const net::Status &netStatus) {
     int n = d.rows(rows, MAX_ROWS);
     int shown = n < MAX_CARDS ? n : MAX_CARDS;
     for (int i = 0; i < shown; i++) addCard(rows[i], d.hostCount() > 1);
+    // Faux positif de cppcheck 2.11 (CI) : n va jusqu'a MAX_ROWS (48) > MAX_CARDS.
+    // cppcheck-suppress knownConditionTrueFalse
     if (n > shown) {
         lv_obj_t *more = mkLabel(list, &lv_font_montserrat_14, COLOR_DIM);
         lv_label_set_text_fmt(more, "+%d autres sessions", n - shown);
