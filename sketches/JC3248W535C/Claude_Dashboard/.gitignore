@@ -5,3 +5,6 @@
 *.crt
 bloc.h
 dash_pem_block.h
+
+# Firmware fusionne pour flash web (contient les identifiants de credentials.h)
+firmware/
