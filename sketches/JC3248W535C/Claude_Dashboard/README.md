@@ -222,6 +222,13 @@ $PIO run -e esp32s3 -t upload       # flasher (/dev/ttyACM0)
 $PIO device monitor -e esp32s3      # moniteur série (115200)
 ```
 
+Chaque build produit aussi `firmware/Claude_Dashboard_merged.bin`
+(`tools/merge_firmware.py`) : bootloader, partitions et application en un seul
+fichier, à flasher à l'offset **0x0** depuis Chrome
+([esptool-js](https://espressif.github.io/esptool-js/)), sans PlatformIO.
+Ce fichier contient les identifiants de `credentials.h` : il est ignoré par
+git, ne pas le partager.
+
 Le moniteur a besoin d'un terminal (tty). Pour une capture non interactive,
 toujours bornée dans le temps (jamais d'accès direct au port série, cf.
 `CLAUDE.md`) :
@@ -299,5 +306,6 @@ d'allocation TLS (`MQTT echec rc=-2 ... (TLS -32512 : SSL - Memory allocation fa
 | `lib/wifi_pick/` | choix du réseau WiFi parmi ceux configurés |
 | `test/` | tests natifs Unity |
 | `tools/pem2credentials.sh` | conversion PEM → bloc `credentials.h` |
+| `tools/merge_firmware.py` | script PlatformIO : binaire fusionné `firmware/` pour flash web |
 | `src/esp_bsp.c`, `src/lv_port.c`, `src/esp_lcd_*.c`, `include/` | pilotes écran/tactile (repris de NorthernMan54/JC3248W535EN) |
 | `server/` | agent Python, voir [`server/README.md`](server/README.md) |
