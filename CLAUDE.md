@@ -68,6 +68,7 @@ Les sketches sont organisés par type de carte dans `sketches/` :
 - `JC3248W535C/` - ESP32-S3 avec écran tactile 3.5" IPS 320×480
 - `NodeMCU/` - NodeMCU ESP8266 (ESP-12E)
 - `XIAO-ESP32-C6/` - Carte Seeed Studio avec WiFi
+- `XIAO-ESP32-S3/` - Carte Seeed Studio ESP32-S3 (antenne externe)
 
 ## Fichiers communs
 
@@ -102,6 +103,7 @@ ln -s /chemin/absolu/vers/sketches/common/credentials.h credentials.h
 | JC3248W535C (ESP32-S3 + LCD tactile) | `esp32:esp32:esp32s3` |
 | WEMOS D1 R32 (ESP32 format UNO) | `esp32:esp32:d1_uno32` |
 | XIAO ESP32-C6 | `esp32:esp32:XIAO_ESP32C6` |
+| XIAO ESP32-S3 | `esp32:esp32:XIAO_ESP32S3` |
 
 ## Arduino UNO R3
 
@@ -217,6 +219,35 @@ L'ESP32 sort sa data en 3.3 V, mais les WS2812B veulent un VIH ≥ 0.7 × VDD = 
 - `NTP_Clock/` - Horloge NTP affichée sur moniteur série, fuseau Europe/Paris avec heure d'été
 - `TFT_Shield_Test/` - Test shield TFT 3.5" (échec attendu : pins RS/CS/RST sur GPIO input-only, voir limitation ci-dessus)
 - `Matrix_Scroller/` - Texte défilant sur matrice WS2812B 60×10 (serpentin) avec config web (texte, couleur, luminosité, vitesse, intervalle NTP). WiFi non bloquant : l'affichage démarre sans réseau, et après 15 s sans connexion la carte ouvre le point d'accès `Afficheur-CID` (192.168.4.1) avec portail captif — SSID/mot de passe surchargeables via `AP_SSID`/`AP_PASSWORD` dans `credentials.h`. Nécessite un level shifter 3.3 V → 5 V, en place et validé (voir gotcha ci-dessus)
+
+## XIAO ESP32-S3
+
+Carte Seeed Studio XIAO ESP32S3, version de base (pas la Sense : ni caméra, ni micro, ni microSD). Plusieurs exemplaires en stock.
+
+**MCU** : ESP32-S3R8 (dual-core Xtensa LX7 240 MHz, WiFi, BLE 5, PSRAM 8 MB intégrée, Flash 8 MB). Vérifié avec `esptool flash_id`.
+
+**USB** : USB natif → port `/dev/ttyACM0` (même identifiant `303a:1001` que les autres ESP32-S3, d'où l'intérêt de `flash_id` pour savoir quelle carte est branchée : 8 MB de flash ici, 16 MB sur la JC3248W535C).
+
+**LED utilisateur** : GPIO21 (`LED_BUILTIN`), active à l'état bas.
+
+### ⚠️ Antenne externe obligatoire
+
+La XIAO ESP32S3 **n'a pas d'antenne intégrée** : l'antenne souple fournie se clipse sur le connecteur U.FL au dos de la carte. Sans elle, la carte ne voit pas le réseau, même à côté de la box : `WiFi.status()` reste à 1 (`WL_NO_SSID_AVAIL`), ce qui fait d'abord penser à un mauvais SSID.
+
+**Compilation/Upload** (arduino-cli, pour un sketch `.ino`) :
+```bash
+./bin/arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3 sketches/XIAO-ESP32-S3/<projet>/<projet>.ino
+./bin/arduino-cli upload --fqbn esp32:esp32:XIAO_ESP32S3 --port /dev/ttyACM0 sketches/XIAO-ESP32-S3/<projet>/<projet>.ino
+```
+
+Les projets PlatformIO (carte `seeed_xiao_esp32s3`, même plateforme pioarduino que la JC3248W535C) :
+```bash
+cd sketches/XIAO-ESP32-S3/<projet>
+~/.platformio/penv/bin/pio run -e xiao -t upload
+```
+
+**Sketches disponibles** :
+- `DS18B20_MQTT/` - (PlatformIO) Sonde DS18B20 sur D0, sans résistance de tirage (pull-up interne, suffisant pour ~1 m de câble), publiée dans Home Assistant par MQTT Discovery (broker `MQTT_*` de `credentials.h`) : mesure toutes les 10 s, publication à 0,2 °C d'écart ou toutes les 5 min, capteur indisponible après 3 lectures invalides. Logique pure dans `lib/temp_logic/` (24 tests natifs). Boîtier imprimable dans `case/`. Voir son `README.md`
 
 ## Circuit Playground Express
 

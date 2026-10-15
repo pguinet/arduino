@@ -29,6 +29,12 @@ LovyanGFX
 #  rien a installer avec arduino-cli pour ce sketch)
 PubSubClient
 
+# Sonde DS18B20 (1-Wire)
+# (XIAO-ESP32-S3/DS18B20_MQTT les utilise via les lib_deps PlatformIO :
+#  rien a installer avec arduino-cli pour ce sketch)
+OneWire
+DallasTemperature
+
 # Ping ESP32 (NON PRESENT DANS L'INDEX OFFICIEL — installer via git)
 # ./bin/arduino-cli lib install --git-url https://github.com/marian-craciunescu/ESP32Ping.git
 # ESP32Ping
