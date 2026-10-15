@@ -1,0 +1,77 @@
+{
+  "planPath": "docs/plans/2026-10-15-xiao-s3-ds18b20.md",
+  "tasks": [
+    {
+      "id": 0,
+      "subject": "Task 0: Squelette PlatformIO",
+      "status": "completed"
+    },
+    {
+      "id": 1,
+      "subject": "Task 1: Validation, arrondi et formatage des lectures",
+      "status": "completed",
+      "blockedBy": [
+        0
+      ]
+    },
+    {
+      "id": 2,
+      "subject": "Task 2: Decision de publier",
+      "status": "completed",
+      "blockedBy": [
+        1
+      ]
+    },
+    {
+      "id": 3,
+      "subject": "Task 3: Etat de la sonde",
+      "status": "completed",
+      "blockedBy": [
+        1
+      ]
+    },
+    {
+      "id": 4,
+      "subject": "Task 4: Identifiant, sujets et decouverte Home Assistant",
+      "status": "completed",
+      "blockedBy": [
+        0
+      ]
+    },
+    {
+      "id": 5,
+      "subject": "Task 5: Firmware main.cpp",
+      "status": "completed",
+      "blockedBy": [
+        2,
+        3,
+        4
+      ]
+    },
+    {
+      "id": 6,
+      "subject": "Task 6: Qualite (cppcheck)",
+      "status": "completed",
+      "blockedBy": [
+        5
+      ]
+    },
+    {
+      "id": 7,
+      "subject": "Task 7: Verification sur la carte",
+      "status": "completed",
+      "blockedBy": [
+        6
+      ]
+    },
+    {
+      "id": 8,
+      "subject": "Task 8: Documentation",
+      "status": "completed",
+      "blockedBy": [
+        7
+      ]
+    }
+  ],
+  "lastUpdated": "2026-10-15T20:56:23+02:00"
+}
