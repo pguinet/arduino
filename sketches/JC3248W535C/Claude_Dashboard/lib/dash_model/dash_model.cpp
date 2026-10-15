@@ -16,6 +16,7 @@ static void copyStr(char *dst, size_t size, const char *src) {
 static State parseState(const char *s) {
     if (s && strcmp(s, "working") == 0) return State::Working;
     if (s && strcmp(s, "permission") == 0) return State::Permission;
+    if (s && strcmp(s, "question") == 0) return State::Question;
     return State::Idle;
 }
 
@@ -78,8 +79,18 @@ bool parseSnapshot(const char *json, size_t len, HostSnapshot &out) {
 static int urgency(State s) {
     switch (s) {
         case State::Permission: return 0;
-        case State::Idle: return 1;
-        default: return 2;
+        case State::Question: return 1;
+        case State::Idle: return 2;
+        default: return 3;
+    }
+}
+
+static Alert alertFor(State s) {
+    switch (s) {
+        case State::Permission: return Alert::Permission;
+        case State::Question: return Alert::Question;
+        case State::Idle: return Alert::Idle;
+        default: return Alert::None;
     }
 }
 
@@ -137,8 +148,8 @@ Alert Dashboard::apply(const HostSnapshot &snap, int64_t now, bool *changed) {
             const Session &cur = snap.sessions[i];
             const Session *old = findSession(prev, cur.id);
             if (!old || old->state == cur.state) continue;
-            if (cur.state == State::Permission) alert = Alert::Permission;
-            else if (cur.state == State::Idle && alert == Alert::None) alert = Alert::Idle;
+            Alert next = alertFor(cur.state);
+            if (next > alert) alert = next;
         }
     } else if (count_ < MAX_HOSTS) {
         idx = count_++;
@@ -286,6 +297,7 @@ uint32_t colorForPercent(int pct) {
 const char *stateLabel(State s) {
     switch (s) {
         case State::Permission: return "PERMISSION";
+        case State::Question: return "QUESTION";
         case State::Idle: return "ATTENTE";
         default: return "TRAVAILLE";
     }

@@ -40,6 +40,13 @@ void test_parse_full() {
     TEST_ASSERT_EQUAL_STRING("", s.sessions[1].tool);
 }
 
+void test_parse_question_state() {
+    const char *j = "{\"host\":\"h\",\"sessions\":[{\"id\":\"q\",\"state\":\"question\"}]}";
+    HostSnapshot s;
+    TEST_ASSERT_TRUE(parseSnapshot(j, strlen(j), s));
+    TEST_ASSERT_EQUAL((int)State::Question, (int)s.sessions[0].state);
+}
+
 void test_parse_no_limits() {
     const char *j = "{\"host\":\"h\",\"ts\":1,\"sessions\":[]}";
     HostSnapshot s;
@@ -185,6 +192,7 @@ void test_percentages_clamped() {
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_parse_full);
+    RUN_TEST(test_parse_question_state);
     RUN_TEST(test_parse_no_limits);
     RUN_TEST(test_parse_invalid_json);
     RUN_TEST(test_parse_missing_host);

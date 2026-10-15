@@ -15,6 +15,11 @@ from claude_dash.procs import find_claude_pid
 WORKING = "working"
 IDLE = "idle"
 PERMISSION = "permission"
+QUESTION = "question"
+# Dialogues où Claude Code attend une réponse et non une autorisation. Leurs
+# notifications n'ont pas de type dédié : AskUserQuestion arrive en permission_prompt.
+QUESTION_TOOLS = frozenset({"AskUserQuestion"})
+QUESTION_NOTIFICATIONS = frozenset({"elicitation_dialog", "elicitation_url_dialog"})
 
 
 def _set_state(data: dict[str, Any], state: str, now: int) -> None:
@@ -65,6 +70,9 @@ def apply_event(
     elif name == "UserPromptSubmit":
         _set_state(data, WORKING, now)
         data.pop("tool", None)
+    elif name == "PreToolUse" and event.get("tool_name") in QUESTION_TOOLS:
+        _set_state(data, QUESTION, now)
+        data["tool"] = str(event["tool_name"])
     elif name in ("PreToolUse", "PostToolUse"):
         _set_state(data, WORKING, now)
         if tool := event.get("tool_name"):
@@ -73,7 +81,9 @@ def apply_event(
         # seul signal après un Esc sur une demande de permission (pas de Stop)
         _set_state(data, IDLE, now)
         data.pop("tool", None)
-    elif name == "Notification" and _is_permission(event):
+    elif name == "Notification" and event.get("notification_type") in QUESTION_NOTIFICATIONS:
+        _set_state(data, QUESTION, now)
+    elif name == "Notification" and _is_permission(event) and data.get("state") != QUESTION:
         _set_state(data, PERMISSION, now)
     elif name == "Stop":
         _set_state(data, IDLE, now)

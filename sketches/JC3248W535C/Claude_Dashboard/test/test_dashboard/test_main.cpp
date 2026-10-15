@@ -68,6 +68,30 @@ void test_permission_wins_over_idle() {
     TEST_ASSERT_EQUAL((int)Alert::Permission, (int)d.apply(mk("h", 2, ids, after, t), 102));
 }
 
+void test_alert_on_transition_to_question() {
+    Dashboard d;
+    const char *ids[] = {"a"};
+    State w[] = {State::Working}, q[] = {State::Question};
+    int64_t since[] = {10};
+    d.apply(mk("h", 1, ids, w, since), 100);
+    TEST_ASSERT_EQUAL((int)Alert::Question, (int)d.apply(mk("h", 1, ids, q, since), 102));
+}
+
+void test_alert_priority_permission_question_idle() {
+    Dashboard d;
+    const char *ids[] = {"a", "b", "c"};
+    State before[] = {State::Working, State::Working, State::Working};
+    State qi[] = {State::Idle, State::Question, State::Working};
+    State pqi[] = {State::Working, State::Working, State::Working};
+    int64_t t[] = {1, 1, 1};
+    d.apply(mk("h", 3, ids, before, t), 100);
+    // question l'emporte sur attente, quel que soit l'ordre des sessions
+    TEST_ASSERT_EQUAL((int)Alert::Question, (int)d.apply(mk("h", 3, ids, qi, t), 102));
+    d.apply(mk("h", 3, ids, pqi, t), 104);
+    State all[] = {State::Question, State::Permission, State::Idle};
+    TEST_ASSERT_EQUAL((int)Alert::Permission, (int)d.apply(mk("h", 3, ids, all, t), 106));
+}
+
 void test_no_alert_when_previous_snapshot_was_stale() {
     // Retour du serveur apres une longue coupure : pas de salve de bips.
     Dashboard d;
@@ -114,6 +138,20 @@ void test_rows_sorted_by_urgency_then_age() {
     TEST_ASSERT_EQUAL_STRING("i_new", rows[2].session->id);
     TEST_ASSERT_EQUAL_STRING("w", rows[3].session->id);
     TEST_ASSERT_EQUAL_STRING("h", rows[0].host);
+}
+
+void test_rows_question_between_permission_and_idle() {
+    Dashboard d;
+    const char *ids[] = {"i", "q", "w", "p"};
+    State st[] = {State::Idle, State::Question, State::Working, State::Permission};
+    int64_t since[] = {10, 90, 10, 90};
+    d.apply(mk("h", 4, ids, st, since), 100);
+    Row rows[MAX_ROWS];
+    TEST_ASSERT_EQUAL(4, d.rows(rows, MAX_ROWS));
+    TEST_ASSERT_EQUAL_STRING("p", rows[0].session->id);
+    TEST_ASSERT_EQUAL_STRING("q", rows[1].session->id);
+    TEST_ASSERT_EQUAL_STRING("i", rows[2].session->id);
+    TEST_ASSERT_EQUAL_STRING("w", rows[3].session->id);
 }
 
 void test_rows_sort_is_stable() {
@@ -651,6 +689,9 @@ int main() {
     RUN_TEST(test_alert_idle_after_working);
     RUN_TEST(test_new_session_no_alert);
     RUN_TEST(test_permission_wins_over_idle);
+    RUN_TEST(test_alert_on_transition_to_question);
+    RUN_TEST(test_alert_priority_permission_question_idle);
+    RUN_TEST(test_rows_question_between_permission_and_idle);
     RUN_TEST(test_no_alert_when_previous_snapshot_was_stale);
     RUN_TEST(test_alert_when_previous_snapshot_at_stale_limit);
     RUN_TEST(test_rows_sorted_by_urgency_then_age);

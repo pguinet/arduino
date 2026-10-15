@@ -77,6 +77,46 @@ def test_idle_prompt_after_permission_is_idle() -> None:
     assert "tool" not in d
 
 
+def test_ask_user_question_is_question() -> None:
+    d: dict[str, Any] = {"state": "working", "since": 100}
+    apply_event(d, ev("PreToolUse", tool_name="AskUserQuestion"), now=110, pid=1)
+    assert d["state"] == "question"
+    assert d["since"] == 110
+    assert d["tool"] == "AskUserQuestion"
+
+
+def test_permission_prompt_of_a_question_keeps_question() -> None:
+    # AskUserQuestion passe par le dialogue de permission : notifié permission_prompt
+    d: dict[str, Any] = {"state": "question", "since": 110, "tool": "AskUserQuestion"}
+    apply_event(d, ev("Notification", notification_type="permission_prompt"), now=111, pid=1)
+    assert d["state"] == "question"
+    assert d["since"] == 110
+
+
+def test_permission_prompt_after_answered_question_is_permission() -> None:
+    d: dict[str, Any] = {"state": "question", "since": 110, "tool": "AskUserQuestion"}
+    apply_event(d, ev("PostToolUse", tool_name="AskUserQuestion"), now=120, pid=1)
+    assert d["state"] == "working"
+    apply_event(d, ev("PreToolUse", tool_name="Bash"), now=121, pid=1)
+    apply_event(d, ev("Notification", notification_type="permission_prompt"), now=122, pid=1)
+    assert d["state"] == "permission"
+
+
+@pytest.mark.parametrize("ntype", ["elicitation_dialog", "elicitation_url_dialog"])
+def test_mcp_elicitation_is_question(ntype: str) -> None:
+    d: dict[str, Any] = {"state": "working", "since": 100, "tool": "mcp__srv__login"}
+    apply_event(d, ev("Notification", notification_type=ntype), now=110, pid=1)
+    assert d["state"] == "question"
+    assert d["since"] == 110
+
+
+def test_idle_prompt_after_question_is_idle() -> None:
+    d: dict[str, Any] = {"state": "question", "since": 110, "tool": "AskUserQuestion"}
+    apply_event(d, ev("Notification", notification_type="idle_prompt"), now=200, pid=1)
+    assert d["state"] == "idle"
+    assert "tool" not in d
+
+
 def test_session_start_compact_keeps_state() -> None:
     d: dict[str, Any] = {"state": "working", "since": 100, "tool": "Bash"}
     apply_event(d, ev("SessionStart", source="compact"), now=150, pid=1)
