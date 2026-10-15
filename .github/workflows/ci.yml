@@ -1,0 +1,92 @@
+# Tests et qualite : projets PlatformIO avec tests natifs + agent Python
+# de Claude_Dashboard. Le firmware est compile avec un credentials.h tire de
+# credentials.h.example (le vrai n'est jamais dans le depot).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    name: Projets PlatformIO testes
+    runs-on: ubuntu-latest
+    outputs:
+      projects: ${{ steps.find.outputs.projects }}
+    steps:
+      - uses: actions/checkout@v4
+      # Tout projet qui declare un [env:native] a des tests natifs.
+      - id: find
+        run: |
+          projects=$(grep -rl --include=platformio.ini '^\[env:native\]' sketches \
+            | xargs -n1 dirname | sort | jq -R . | jq -cs .)
+          echo "projects=$projects" >> "$GITHUB_OUTPUT"
+          echo "Projets : $projects"
+
+  platformio:
+    name: ${{ matrix.project }}
+    needs: discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project: ${{ fromJSON(needs.discover.outputs.projects) }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.project }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles(format('{0}/platformio.ini', matrix.project)) }}
+      - name: Installer PlatformIO
+        run: pip install platformio==6.1.19
+      - name: credentials.h factice
+        run: cp "$GITHUB_WORKSPACE/sketches/common/credentials.h.example" src/credentials.h
+      - name: Tests natifs
+        run: pio test -e native
+      - name: Environnement de la carte
+        id: env
+        run: |
+          env=$(python -c "import configparser; c = configparser.ConfigParser(); \
+            c.read('platformio.ini'); print(c['platformio']['default_envs'].split(',')[0].strip())")
+          echo "name=$env" >> "$GITHUB_OUTPUT"
+      - name: Compilation du firmware
+        run: pio run -e ${{ steps.env.outputs.name }}
+      - name: cppcheck
+        run: pio check -e ${{ steps.env.outputs.name }} --skip-packages --fail-on-defect=low
+
+  claude-dash-agent:
+    name: Agent Python (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    defaults:
+      run:
+        working-directory: sketches/JC3248W535C/Claude_Dashboard/server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Installer le paquet et ses outils
+        run: pip install -e ".[dev]"
+      - name: ruff
+        run: |
+          ruff check .
+          ruff format --check .
+      - name: mypy
+        run: mypy claude_dash
+      - name: pytest
+        run: pytest -q

@@ -25,6 +25,8 @@ sleep 35 | timeout 30 ./bin/arduino-cli monitor -p /dev/ttyUSB0 -c baudrate=1152
 
 **Projet personnel** : Il s'agit d'un projet personnel. Ne pas demander de numéro Jira pour les commits git. Utilise des messages de commit descriptifs sans préfixe.
 
+**CI** : `.github/workflows/ci.yml` lance, pour chaque projet PlatformIO qui a un `[env:native]`, les tests natifs, la compilation du firmware (avec `credentials.h.example` comme `credentials.h`) et cppcheck sans défaut toléré (`.pio/` exclu via `check_flags`) ; plus ruff, mypy et pytest pour l'agent Python de `Claude_Dashboard` (Python 3.11 et 3.13). Un nouveau projet avec `[env:native]` est pris en compte automatiquement.
+
 Dans ce projet, on va principalement créer des petits programmes de démonstration pour certaines cartes en ma possession.
 
 Ah et pour etre plus amical, tu peux me tutoyer.
