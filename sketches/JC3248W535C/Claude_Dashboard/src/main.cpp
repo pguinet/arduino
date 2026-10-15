@@ -2,7 +2,7 @@
  * Claude_Dashboard - JC3248W535C
  *
  * Tableau de bord Claude Code : quotas du forfait, etat des sessions
- * (travaille / attente / permission) et contexte, recus d'un serveur
+ * (travaille / attente / question / permission) et contexte, recus d'un serveur
  * distant via MQTT/TLS. Bip et reveil de l'ecran quand une session
  * attend une reponse.
  *
@@ -246,7 +246,7 @@ static void onMessage(char *topic, byte *payload, unsigned int len)
 
     bool changed = false;
     dash::Alert a = dashboard.apply(incoming, now, &changed);
-    if (a == dash::Alert::Permission || pendingAlert == dash::Alert::None) pendingAlert = a;
+    if (a > pendingAlert) pendingAlert = a;
     if (changed) renderNeeded = true;
 }
 
@@ -556,20 +556,24 @@ static void setScreen(bool on, const char *why)
     Serial.printf("Ecran %s (%s)\n", on ? "allume" : "eteint", why);
 }
 
-// Alerte (transition vers attente/permission) : ecran rallume puis bip.
+// Alerte (transition vers attente/question/permission) : ecran rallume puis bip.
 // dash_model ne leve pas d'alerte pour une session inconnue : pas de bip au
 // demarrage ni au premier snapshot.
 static void alertTriggered(dash::Alert a)
 {
     static const BeepNote PERMISSION[] = {{1760, 90}, {0, 40}, {1760, 90}};  // deux notes aigues
     static const BeepNote IDLE[] = {{660, 150}};                             // une note grave
+    static const BeepNote QUESTION[] = {{1175, 90}, {0, 40}, {1568, 90}};   // deux notes montantes
     lastActivityMs = millis();
     setScreen(true, "alerte");
     uint32_t t0 = millis();
     if (a == dash::Alert::Permission) beep_play(PERMISSION, sizeof PERMISSION / sizeof PERMISSION[0]);
+    else if (a == dash::Alert::Question) beep_play(QUESTION, sizeof QUESTION / sizeof QUESTION[0]);
     else if (a == dash::Alert::Idle) beep_play(IDLE, sizeof IDLE / sizeof IDLE[0]);
     Serial.printf("Alerte : %s (bip %lu ms)\n",
-                  a == dash::Alert::Permission ? "permission, 2 bips aigus" : "attente, 1 bip grave",
+                  a == dash::Alert::Permission ? "permission, 2 bips aigus"
+                  : a == dash::Alert::Question ? "question, 2 bips montants"
+                                               : "attente, 1 bip grave",
                   (unsigned long)(millis() - t0));
 }
 

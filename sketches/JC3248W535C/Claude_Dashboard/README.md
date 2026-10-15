@@ -3,7 +3,7 @@
 Tableau de bord Claude Code sur l'écran 3.5" (480×320, paysage) du JC3248W535C :
 quotas du forfait, et état de chaque session Claude Code qui tourne sur un ou
 plusieurs serveurs Linux distants. L'écran bipe et se rallume quand une session
-attend une réponse ou une permission.
+attend une réponse, une permission ou la réponse à une question.
 
 Ce README couvre le firmware et la mise en place d'ensemble. L'agent serveur
 (installation, hooks, statusline, configuration) est documenté dans
@@ -67,12 +67,13 @@ Serveur Linux (un ou plusieurs)                  Scaleway IoT Hub        Maison
   tourné depuis des heures ne fait plus alterner l'affichage. Une fenêtre dont
   le reset est passé est ignorée, côté agent comme côté écran. « -- » tant
   qu'inconnus.
-- **Cartes** (une par session), triées par urgence : `PERMISSION` > `ATTENTE` >
-  `TRAVAILLE`, puis de la plus ancienne à la plus récente. Chaque carte : projet
-  (`projet@hôte` si plusieurs serveurs), modèle, état, outil en cours, durée dans
-  l'état, jauge de contexte. Au plus 16 cartes, puis « +N autres sessions ».
-- **Couleurs** : liseré et état rose = permission, orange = attente, bleu =
-  travaille. Jauges : vert < 60 %, orange < 85 %, rose au-delà.
+- **Cartes** (une par session), triées par urgence : `PERMISSION` > `QUESTION` >
+  `ATTENTE` > `TRAVAILLE`, puis de la plus ancienne à la plus récente. Chaque
+  carte : projet (`projet@hôte` si plusieurs serveurs), modèle, état, outil en
+  cours, durée dans l'état, jauge de contexte. Au plus 16 cartes, puis « +N autres sessions ».
+- **Couleurs** : liseré et état rose = permission, violet = question
+  (`AskUserQuestion` ou saisie demandée par un serveur MCP), orange = attente,
+  bleu = travaille. Jauges : vert < 60 %, orange < 85 %, rose au-delà.
 - **État réseau** tant qu'aucun serveur n'a publié (jusqu'à 20 s après le
   démarrage) : trois lignes WiFi / Heure / MQTT, pour diagnostiquer sans câble.
   Par exemple `WiFi : <ssid>  <ip>  -67 dBm`, `Heure : attente NTP (2 min)`
@@ -90,9 +91,9 @@ Serveur Linux (un ou plusieurs)                  Scaleway IoT Hub        Maison
   vide). 4 serveurs et 12 sessions par serveur au plus. Un serveur qui revient est
   traité comme nouveau (pas de bip).
 - **Bips** (NS4168, volume `BEEP_VOLUME` = 35 %) sur un changement d'état d'une
-  session déjà connue : deux bips aigus pour `permission`, un bip grave pour
-  `attente`. Pas de bip au démarrage, au premier snapshot d'un serveur, ni au
-  retour d'un serveur qui était périmé.
+  session déjà connue : deux bips aigus pour `permission`, deux bips montants
+  pour `question`, un bip grave pour `attente`. Pas de bip au démarrage, au
+  premier snapshot d'un serveur, ni au retour d'un serveur qui était périmé.
 - **Veille** : écran allumé tant qu'au moins une session est listée (tout état,
   tout serveur, même périmée). Sans session, extinction après 10 min sans
   activité (toucher, alerte, disparition de la dernière session). Un toucher ou

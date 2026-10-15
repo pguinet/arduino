@@ -21,7 +21,10 @@ Serveur Linux distant                                   Cloud            Maison
 
 - **`claude-dash-hook`** : branché sur les hooks `SessionStart`, `UserPromptSubmit`,
   `PreToolUse`, `PostToolUse`, `Notification`, `Stop` et `SessionEnd` ; met à jour
-  l'état de la session (`working`, `permission`, `idle`).
+  l'état de la session (`working`, `permission`, `question`, `idle`). Une question
+  (`AskUserQuestion`, ou `elicitation_dialog` d'un serveur MCP) est distinguée
+  d'une permission : Claude Code la notifie pourtant en `permission_prompt`,
+  c'est le `PreToolUse` qui la reconnaît.
 - **`claude-dash-statusline`** : appelé par ta statusline, récupère modèle, contexte
   et quotas.
 - **`claude-dash-agent`** : démon qui agrège les sessions, purge celles dont le
@@ -309,7 +312,8 @@ s'éjectent mutuellement en boucle.
    Sous 20 s, l'écran reçoit le serveur (cartes en `projet@<nom>` dès que deux
    serveurs publient). Relance les sessions Claude Code déjà ouvertes (hooks), puis
    vérifie : session qui apparaît, `TRAVAILLE` pendant une réponse, `PERMISSION`
-   et deux bips sur une commande à approuver, `ATTENTE` et un bip à la fin du tour,
+   et deux bips sur une commande à approuver, `QUESTION` et deux bips montants
+   quand Claude pose une question, `ATTENTE` et un bip à la fin du tour,
    disparition à `/exit` ; un `kill -9` du processus `claude` la retire sous ~2 s.
 8. **Désinstallation** : `./install.sh --uninstall` (voir « Désinstallation »),
    puis supprime `~/.config/claude-dash/`, la ligne de la statusline, et le device

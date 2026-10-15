@@ -13,6 +13,7 @@ using namespace dash;
 #define COLOR_WORKING 0x4cc9f0
 #define COLOR_IDLE    0xfca311
 #define COLOR_PERM    0xf72585
+#define COLOR_QUESTION 0xb388ff
 #define COLOR_OK      0x4caf50
 
 // Au-dela de cette date (2024-01-01), l'horloge systeme est consideree synchronisee.
@@ -40,7 +41,12 @@ static void setText(lv_obj_t *l, const char *text) {
 }
 
 static uint32_t stateColor(State s) {
-    return s == State::Permission ? COLOR_PERM : s == State::Idle ? COLOR_IDLE : COLOR_WORKING;
+    switch (s) {
+        case State::Permission: return COLOR_PERM;
+        case State::Question: return COLOR_QUESTION;
+        case State::Idle: return COLOR_IDLE;
+        default: return COLOR_WORKING;
+    }
 }
 
 static lv_obj_t *mkLabel(lv_obj_t *parent, const lv_font_t *font, uint32_t color) {

@@ -7,7 +7,7 @@ import unicodedata
 from collections.abc import Callable
 from typing import Any, TypeGuard
 
-STATES = ("working", "idle", "permission")
+STATES = ("working", "idle", "permission", "question")
 MAX_SESSIONS = 12
 NO_PID_TTL = 12 * 3600
 LIMIT_KEYS = ("h5", "h5_reset", "d7", "d7_reset", "updated")

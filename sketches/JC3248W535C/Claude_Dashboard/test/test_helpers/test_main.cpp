@@ -50,6 +50,7 @@ void test_color_thresholds() {
 
 void test_state_labels() {
     TEST_ASSERT_EQUAL_STRING("PERMISSION", stateLabel(State::Permission));
+    TEST_ASSERT_EQUAL_STRING("QUESTION", stateLabel(State::Question));
     TEST_ASSERT_EQUAL_STRING("ATTENTE", stateLabel(State::Idle));
     TEST_ASSERT_EQUAL_STRING("TRAVAILLE", stateLabel(State::Working));
 }

@@ -1,6 +1,8 @@
 import json
 from typing import Any
 
+import pytest
+
 from claude_dash.snapshot import build_snapshot
 
 NOW = 1_000_000
@@ -68,6 +70,12 @@ def test_truncation_and_invalid_state() -> None:
     sess = snap["sessions"][0]
     assert len(sess["project"]) == 32
     assert sess["state"] == "idle"
+
+
+@pytest.mark.parametrize("state", ["working", "idle", "permission", "question"])
+def test_known_states_are_published(state: str) -> None:
+    snap, _ = build_snapshot("srv", [s(state=state)], {}, NOW, pid_alive=lambda p: True)
+    assert snap["sessions"][0]["state"] == state
 
 
 def test_max_12_most_recent() -> None:

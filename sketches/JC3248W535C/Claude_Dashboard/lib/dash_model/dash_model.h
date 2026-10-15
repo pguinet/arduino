@@ -14,8 +14,9 @@ constexpr int64_t STALE_AFTER_S = 180;
 // expire(), et son slot peut etre repris par un nouvel hote.
 constexpr int64_t FORGET_AFTER_S = 3600;
 
-enum class State : uint8_t { Working, Idle, Permission };
-enum class Alert : uint8_t { None, Idle, Permission };
+enum class State : uint8_t { Working, Idle, Permission, Question };
+// Ordre = priorite : une alerte plus haute remplace une alerte en attente.
+enum class Alert : uint8_t { None, Idle, Question, Permission };
 
 struct Limits {
     int h5 = -1;  // pourcentage 0..100, -1 si inconnu
@@ -70,7 +71,7 @@ public:
     // Oublie les hotes dont l'age (meme regle que staleSeconds) depasse
     // FORGET_AFTER_S. Retourne le nombre d'hotes retires (ordre conserve).
     int expire(int64_t now);
-    // Lignes triees par urgence (permission > idle > working) puis anciennete
+    // Lignes triees par urgence (permission > question > idle > working) puis anciennete
     // (since croissant ; since = 0, inconnu, passe en tete de son groupe).
     // Les pointeurs des Row ne sont valides que jusqu'au prochain apply(),
     // removeHost() ou expire() : ne pas les conserver.
@@ -101,7 +102,7 @@ private:
 // Helpers d'affichage
 void formatDuration(int64_t seconds, char *out, size_t size);  // "0:42", "5:10", "1h05", "2j", "999j+"
 uint32_t colorForPercent(int pct);  // vert < 60 / orange < 85 / rouge (pct < 0 : vert, a eviter)
-const char *stateLabel(State s);                                // "TRAVAILLE", "ATTENTE", "PERMISSION"
+const char *stateLabel(State s);                                // "TRAVAILLE", "ATTENTE", "PERMISSION", "QUESTION"
 
 // Veille : ecran allume tant qu'au moins une session est listee ; sans session,
 // eteint apres timeoutMs sans activite (toucher, alerte, disparition de la
