@@ -321,6 +321,7 @@ Carte ESP8266 avec écran OLED 0.96" intégré (SSD1306).
 - `Mini_Dashboard` - Dashboard interactif web ↔ OLED (sliders, toggles, messages)
 - `Bitcoin_Ticker` - Cours du Bitcoin en USD via API CoinGecko (maj toutes les 60s)
 - `Zigbee_Monitor` - Affichage des capteurs Zigbee via MQTT (Zigbee2MQTT)
+- `Outdoor_Temp/` - (PlatformIO, env `hw364b`) Afficheur de la température extérieure : sonde Zigbee SNZB-02LD lue sur `zigbee2mqtt/temperature_exterieure` (retenu, ~450 octets → `setBufferSize(1024)`), compte MQTT dédié `AFFICHEUR_MQTT_*` dans `credentials.h`. Heure NTP, âge de la mesure, alerte si périmée (> 1 h) ou sonde hors ligne. Logique pure dans `lib/outdoor_logic/` (22 tests natifs). Voir son `README.md`
 
 ## JC3248W535C
 
