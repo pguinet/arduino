@@ -64,11 +64,14 @@ Chaque sketch doit avoir un en-tête standardisé :
 
 Les sketches sont organisés par type de carte dans `sketches/` :
 - `CircuitPlayground-Express/` - Carte Adafruit avec LEDs, capteurs, pads capacitifs
+- `D1-R32/` - WEMOS D1 R32, ESP32 au format Arduino UNO
 - `ESP32-4848S040/` - ESP32-S3 avec écran tactile 4" IPS 480×480 et 3 relais (Guition)
 - `ESP32-2432S028/` - ESP32 avec écran tactile 2.8" TFT 320×240 (Cheap Yellow Display)
 - `HW-364B/` - ESP8266 avec écran OLED bicolore (jaune/bleu) intégré
 - `JC3248W535C/` - ESP32-S3 avec écran tactile 3.5" IPS 320×480
 - `NodeMCU/` - NodeMCU ESP8266 (ESP-12E)
+- `UNO-R3/` - Arduino UNO R3 classique (ATmega328P)
+- `UNO-R4-WiFi/` - Arduino UNO R4 WiFi (Renesas RA4M1 + ESP32-S3) avec matrice LED 12×8
 - `XIAO-ESP32-C6/` - Carte Seeed Studio avec WiFi
 - `XIAO-ESP32-S3/` - Carte Seeed Studio ESP32-S3 (antenne externe)
 
