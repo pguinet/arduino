@@ -147,6 +147,128 @@ def parse_snapshot(payload: bytes | str) -> HostSnapshot | None:
     )
 
 
+_URGENCY = {State.PERMISSION: 0, State.QUESTION: 1, State.IDLE: 2, State.WORKING: 3}
+_ALERTS = {
+    State.PERMISSION: Alert.PERMISSION,
+    State.QUESTION: Alert.QUESTION,
+    State.IDLE: Alert.IDLE,
+}
+
+
+@dataclass(frozen=True)
+class Row:
+    session: Session
+    host: str
+
+
+@dataclass(frozen=True)
+class ApplyResult:
+    alert: Alert
+    changed: bool  # the display must be rebuilt (a heartbeat where only ts moves: False)
+    alerted: frozenset[tuple[str, str]]  # (host, session id) of the sessions that alerted
+
+
+@dataclass
+class _HostEntry:
+    snap: HostSnapshot
+    received_at: int
+
+
+def _age(entry: _HostEntry, now: int) -> int:
+    """From the server's ts when known (an old delayed message is stale on arrival),
+    else from reception; clamped at 0 (clock skew)."""
+    origin = entry.snap.ts if entry.snap.ts > 0 else entry.received_at
+    return max(now - origin, 0)
+
+
+def _shown_limits(lim: Limits) -> tuple[int, int, int, int]:
+    # updated only picks the host, it is never displayed
+    return (lim.h5, lim.h5_reset, lim.d7, lim.d7_reset)
+
+
+def _same_content(a: HostSnapshot, b: HostSnapshot) -> bool:
+    return a.sessions == b.sessions and _shown_limits(a.limits) == _shown_limits(b.limits)
+
+
+def _window_valid(pct: int, reset_at: int, now: int) -> bool:
+    return pct >= 0 and (reset_at <= 0 or reset_at > now)
+
+
+class Dashboard:
+    """Hosts in arrival order, each with its latest snapshot."""
+
+    def __init__(self) -> None:
+        self._hosts: list[_HostEntry] = []
+
+    def _find(self, host: str) -> _HostEntry | None:
+        return next((e for e in self._hosts if e.snap.host == host), None)
+
+    def apply(self, snap: HostSnapshot, now: int) -> ApplyResult:
+        entry = self._find(snap.host)
+        alerted: set[tuple[str, str]] = set()
+        alert = Alert.NONE
+        # Previous snapshot already stale: its states were unreliable, no burst of
+        # alerts when the server comes back.
+        if entry is not None and _age(entry, now) <= STALE_AFTER_S:
+            previous = {s.id: s.state for s in entry.snap.sessions}
+            for cur in snap.sessions:
+                old = previous.get(cur.id)
+                if old is None or old is cur.state or cur.state not in _ALERTS:
+                    continue
+                alerted.add((snap.host, cur.id))
+                alert = max(alert, _ALERTS[cur.state])
+        shown_before = self.limits(now)
+        diff = entry is None or not _same_content(entry.snap, snap)
+        if entry is None:
+            self._hosts.append(_HostEntry(snap, now))
+        else:
+            entry.snap, entry.received_at = snap, now
+        changed = diff or shown_before != self.limits(now)
+        return ApplyResult(alert, changed, frozenset(alerted))
+
+    def remove_host(self, host: str) -> bool:
+        entry = self._find(host)
+        if entry is None:
+            return False
+        self._hosts.remove(entry)
+        return True
+
+    def expire(self, now: int) -> int:
+        kept = [e for e in self._hosts if _age(e, now) <= FORGET_AFTER_S]
+        removed = len(self._hosts) - len(kept)
+        self._hosts = kept
+        return removed
+
+    def rows(self) -> list[Row]:
+        """By urgency (permission > question > idle > working), then oldest first;
+        since = 0 (unknown) leads its group. Stable."""
+        rows = [Row(s, e.snap.host) for e in self._hosts for s in e.snap.sessions]
+        return sorted(rows, key=lambda r: (_URGENCY[r.session.state], r.session.since))
+
+    def limits(self, now: int) -> Limits:
+        """Each window from the host whose quotas are freshest (limits.updated, else
+        ts), skipping a window whose reset is past."""
+        h5, h5_reset, d7, d7_reset = -1, 0, -1, 0
+        best5 = best7 = -1
+        for e in self._hosts:
+            lim = e.snap.limits
+            fresh = lim.updated if lim.updated > 0 else e.snap.ts
+            if _window_valid(lim.h5, lim.h5_reset, now) and fresh > best5:
+                best5, h5, h5_reset = fresh, lim.h5, lim.h5_reset
+            if _window_valid(lim.d7, lim.d7_reset, now) and fresh > best7:
+                best7, d7, d7_reset = fresh, lim.d7, lim.d7_reset
+        return Limits(h5=h5, h5_reset=h5_reset, d7=d7, d7_reset=d7_reset)
+
+    def host_names(self) -> list[str]:
+        return [e.snap.host for e in self._hosts]
+
+    def stale_seconds(self, now: int) -> int:
+        return max((_age(e, now) for e in self._hosts), default=0)
+
+    def session_count(self) -> int:
+        return sum(len(e.snap.sessions) for e in self._hosts)
+
+
 def format_duration(seconds: int) -> str:
     """'0:42', '5:10', '1h05', '2j', '999j+'."""
     s = max(seconds, 0)
