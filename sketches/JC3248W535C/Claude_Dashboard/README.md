@@ -24,7 +24,11 @@ Serveur Linux (un ou plusieurs)                  Scaleway IoT Hub        Maison
 │  claude-dash-agent (systemd --user) ──┼──► claude-dash/ ─────► JC3248W535C
 │   device "serveur" (1 par serveur)    │    <host>/state       device "ecran"
 └───────────────────────────────────────┘    (QoS 1, sans        (abonné QoS 0)
-                                              retain)
+                                              retain)  │
+                                                       │ mTLS (8883 ou wss 443)
+                                                       ▼
+                                          claude-dash-desktop (fenêtre Tk, X déporté)
+                                          device dédié, abonné QoS 0
 ```
 
 - **Agent** (`server/`) : agrège les sessions, purge celles dont le processus
@@ -39,6 +43,12 @@ Serveur Linux (un ou plusieurs)                  Scaleway IoT Hub        Maison
   8.4, bip I2S. La logique (parsing, agrégation multi-hôte, tri, transitions,
   péremption, veille) vit dans `lib/dash_model/`, sans Arduino ni LVGL, et est
   testée en natif.
+- **Version poste de travail** (`server/claude_dash/desktop*.py`) : la même vue
+  dans une fenêtre Tk toujours au premier plan, affichée par X11 déporté
+  (MobaXterm), cloche X à la place des bips. La logique de `lib/dash_model/` y
+  est portée en Python (`server/claude_dash/model.py`, tests alignés sur les tests
+  natifs) : toute évolution de l'une se reporte sur l'autre. Voir
+  [`server/README.md`](server/README.md#version-poste-de-travail-linux-x-déporté).
 
 ## Ce que montre l'écran
 
@@ -308,4 +318,4 @@ d'allocation TLS (`MQTT echec rc=-2 ... (TLS -32512 : SSL - Memory allocation fa
 | `tools/pem2credentials.sh` | conversion PEM → bloc `credentials.h` |
 | `tools/merge_firmware.py` | script PlatformIO : binaire fusionné `firmware/` pour flash web |
 | `src/esp_bsp.c`, `src/lv_port.c`, `src/esp_lcd_*.c`, `include/` | pilotes écran/tactile (repris de NorthernMan54/JC3248W535EN) |
-| `server/` | agent Python, voir [`server/README.md`](server/README.md) |
+| `server/` | agent Python et version poste de travail (`claude-dash-desktop`), voir [`server/README.md`](server/README.md) |
