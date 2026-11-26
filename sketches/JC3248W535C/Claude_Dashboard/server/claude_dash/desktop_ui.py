@@ -8,6 +8,7 @@ every snapshot.
 
 from __future__ import annotations
 
+import logging
 import queue
 import time
 import tkinter as tk
@@ -46,6 +47,8 @@ FLASH_S = 4.0
 BORDER = 5
 PAD = 6
 LIST_PADX = 8
+
+log = logging.getLogger("claude-dash-desktop")
 
 
 def _ellipsize(text: str, font: tkfont.Font, max_px: int) -> str:
@@ -232,6 +235,14 @@ class DesktopWindow:
         self.root.after(FLASH_STEP_MS, self._flash_step)
 
     def _poll(self) -> None:
+        # Reschedule first: an exception in a Tk callback would end the loop for good.
+        self.root.after(POLL_MS, self._poll)
+        try:
+            self._drain()
+        except Exception:
+            log.exception("événements MQTT non traités")
+
+    def _drain(self) -> None:
         now = int(time.time())
         rebuild, bells, flash = False, 0, frozenset[tuple[str, str]]()
         while True:
@@ -249,7 +260,6 @@ class DesktopWindow:
         deadline = time.monotonic() + FLASH_S
         for key in flash:
             self.flash_until[key] = deadline
-        self.root.after(POLL_MS, self._poll)
 
     def _route(self, event: Event, now: int) -> Reaction:
         if isinstance(event, SnapshotEvent):
@@ -265,6 +275,13 @@ class DesktopWindow:
             self.root.after(i * BELL_GAP_MS, self.root.bell)
 
     def _tick(self) -> None:
+        self.root.after(TICK_MS, self._tick)
+        try:
+            self._refresh()
+        except Exception:
+            log.exception("rafraîchissement de la fenêtre impossible")
+
+    def _refresh(self) -> None:
         now = int(time.time())
         screen = self.controller.screen(now)
         if screen.dimmed != self.shown_dimmed:
@@ -274,13 +291,15 @@ class DesktopWindow:
             self._show_banner(screen.banner)
             for slot in self.slots:
                 _set(slot.duration, text=duration_text(slot.since, now))
-        self.root.after(TICK_MS, self._tick)
 
     def _expire(self) -> None:
-        now = int(time.time())
-        if self.controller.expire(now).rebuild:
-            self._render(self.controller.screen(now))
         self.root.after(EXPIRE_MS, self._expire)
+        try:
+            now = int(time.time())
+            if self.controller.expire(now).rebuild:
+                self._render(self.controller.screen(now))
+        except Exception:
+            log.exception("oubli des serveurs muets impossible")
 
     def _flash_step(self) -> None:
         self.flash_on = not self.flash_on

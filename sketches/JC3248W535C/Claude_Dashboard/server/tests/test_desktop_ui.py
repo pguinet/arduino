@@ -14,6 +14,7 @@ tk = pytest.importorskip("tkinter", exc_type=ImportError)
 
 from claude_dash.desktop_ui import DesktopWindow  # noqa: E402
 from claude_dash.model import HostSnapshot, Limits, Session, State  # noqa: E402
+from claude_dash.subscriber import StatusEvent  # noqa: E402
 from claude_dash.view import ConnectionStatus, Controller, Phase  # noqa: E402
 
 NOW = int(time.time())
@@ -88,3 +89,19 @@ def test_overflow_line_counts_hidden_cards(window: DesktopWindow) -> None:
     assert len(window.slots) == 5  # 6 card heights minus the "+N" line
     assert window.more.cget("text") == "+4 autres sessions"
     assert window.more.winfo_manager() == "pack"
+
+
+@pytest.mark.parametrize("loop", ["_poll", "_tick", "_expire"])
+def test_loops_survive_an_exception(
+    window: DesktopWindow, monkeypatch: pytest.MonkeyPatch, loop: str
+) -> None:
+    def boom(*_: object) -> None:
+        raise ValueError("boom")
+
+    scheduled: list[object] = []
+    monkeypatch.setattr(window.controller, "screen", boom)
+    monkeypatch.setattr(window.controller, "expire", boom)
+    monkeypatch.setattr(window.root, "after", lambda ms, fn: scheduled.append(fn))
+    window.events.put(StatusEvent(ConnectionStatus(Phase.DISCONNECTED, "x")))
+    getattr(window, loop)()
+    assert getattr(window, loop) in scheduled

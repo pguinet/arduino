@@ -108,11 +108,11 @@ def test_callbacks_post_status_and_subscribe() -> None:
     cb.on_connect(client, None, None, FakeReason(failure=False, text="Success"), None)
     assert client.subscribed == [("claude-dash/+/state", 0)]
     assert posted[-1] == StatusEvent(ConnectionStatus(Phase.CONNECTED))
+    cb.on_disconnect(client, None, None, FakeReason(failure=True, text="Session taken over"), None)
+    assert posted[-1] == StatusEvent(ConnectionStatus(Phase.DISCONNECTED, "Session taken over"))
     cb.on_connect(client, None, None, FakeReason(failure=True, text="Not authorized"), None)
     assert posted[-1] == StatusEvent(ConnectionStatus(Phase.REFUSED, "Not authorized"))
     assert len(client.subscribed) == 1
-    cb.on_disconnect(client, None, None, FakeReason(failure=True, text="Session taken over"), None)
-    assert posted[-1] == StatusEvent(ConnectionStatus(Phase.DISCONNECTED, "Session taken over"))
     cb.on_connect_fail(client, None)
     last = posted[-1]
     assert isinstance(last, StatusEvent) and last.status.phase is Phase.FAILED
@@ -131,3 +131,16 @@ def test_on_message_never_raises_on_garbage() -> None:
     cb.on_message(None, None, FakeMessage("claude-dash/srv/state", b"\xff"))
     cb.on_message(None, None, object())  # not a message at all
     assert posted == []
+
+
+def test_refusal_not_overwritten_by_the_disconnect_that_follows() -> None:
+    # paho reports a refused CONNACK, then on_disconnect("Unspecified error").
+    posted: list[Event] = []
+    cb = make_callbacks(cfg(), posted.append)
+    client = FakeClient()
+    cb.on_connect(client, None, None, FakeReason(failure=True, text="Not authorized"), None)
+    cb.on_disconnect(client, None, None, FakeReason(failure=True, text="Unspecified error"), None)
+    assert posted == [StatusEvent(ConnectionStatus(Phase.REFUSED, "Not authorized"))]
+    cb.on_connect(client, None, None, FakeReason(failure=False, text="Success"), None)
+    cb.on_disconnect(client, None, None, FakeReason(failure=True, text="Keep alive timeout"), None)
+    assert posted[-1] == StatusEvent(ConnectionStatus(Phase.DISCONNECTED, "Keep alive timeout"))

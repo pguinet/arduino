@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from claude_dash.model import HostSnapshot, Limits, Session, State
+from claude_dash.model import HostSnapshot, Limits, Session, State, parse_snapshot
 from claude_dash.view import (
     ConnectionStatus,
     Controller,
@@ -213,3 +213,17 @@ def test_initial_geometry() -> None:
     assert initial_geometry("top-left", 3840, 1930) == "480x320+20+20"
     assert initial_geometry("bottom-left", 3840, 1930) == "480x320+20+1590"
     assert initial_geometry("bottom-right", 3840, 1930) == "480x320+3340+1590"
+
+
+def test_screen_survives_hostile_snapshot() -> None:
+    snap_ = parse_snapshot(
+        '{"host":"srv","ts":1,"limits":{"h5":10,"h5_reset":10000000000000,'
+        '"d7":5,"d7_reset":100000000000000000000},'
+        '"sessions":[{"id":"a","project":"\\udce9","state":"idle"}]}'
+    )
+    assert snap_ is not None
+    c = connected_controller()
+    c.on_snapshot(snap_, NOW)
+    s = c.screen(NOW, PARIS)
+    assert s.cards[0].title == "�"
+    assert s.quotas[0].reset_text == ""

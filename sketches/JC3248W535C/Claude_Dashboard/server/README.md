@@ -356,11 +356,17 @@ un second lancement affiche `déjà lancé (PID n)` et s'arrête. Sous MobaXterm
 Dépannage :
 - **`pas d'affichage X`** : la session SSH n'a pas de `DISPLAY` ; activer le X11
   forwarding dans la session MobaXterm (ou `ssh -X`).
-- **`MQTT : déconnecté (...)` en boucle** : le même Device ID est utilisé ailleurs
-  (autre instance, écran, `mosquitto_sub`) ; chaque client doit avoir le sien.
-- **`MQTT : refusé par le broker`** : certificat, clé ou Device ID qui ne
-  correspondent pas, ou filtre Subscribe manquant (reconnecter après un
-  changement de filtre).
+- **`MQTT : échec de connexion (réseau, TLS ou certificat)`** : hub injoignable
+  (8883 filtré : passer en wss 443), CA ou certificat client refusé au TLS.
+- **`MQTT : refusé par le broker (...)`** : Device ID inconnu ou qui ne correspond
+  pas au certificat.
+- **`MQTT : connecté, en attente d'un serveur` qui dure** : aucun agent ne publie,
+  ou le filtre Subscribe du device manque (reconnecter après un changement de
+  filtre : un abonnement refusé n'est pas signalé).
+- **Déconnexions en boucle** (pastille qui clignote, puis bandeau « Serveur
+  injoignable » une fois des serveurs affichés) : le même Device ID est utilisé
+  ailleurs (autre instance, écran, `mosquitto_sub`) ; chaque client doit avoir le
+  sien. La raison est dans l'onglet où tourne l'appli (`MQTT déconnecté (...)`).
 - **Pas de son** : réglage de la cloche X dans MobaXterm (Settings → X11).
 
 ## Dépannage

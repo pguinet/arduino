@@ -200,3 +200,27 @@ def test_state_colors() -> None:
     assert state_color(State.QUESTION) == "#b388ff"
     assert state_color(State.IDLE) == "#fca311"
     assert state_color(State.WORKING) == "#4cc9f0"
+
+
+def test_epochs_beyond_32_bits_become_zero() -> None:
+    # A reset in milliseconds would crash datetime formatting in the window.
+    s = parse_snapshot(
+        '{"host":"h","ts":10000000000000,"limits":{"h5":10,"h5_reset":10000000000000},'
+        '"sessions":[{"id":"i","since":100000000000000000000}]}'
+    )
+    assert s is not None
+    assert (s.ts, s.limits.h5_reset, s.sessions[0].since) == (0, 0, 0)
+    ok = parse_snapshot('{"host":"h","ts":4294967295}')
+    assert ok is not None and ok.ts == 4294967295
+
+
+def test_lone_surrogates_replaced() -> None:
+    # Valid JSON escapes that Tk cannot encode.
+    s = parse_snapshot(
+        '{"host":"h","sessions":[{"id":"\\udce9","project":"a\\udce9","model":"\\ud800",'
+        '"tool":"\\udfff"}]}'
+    )
+    assert s is not None
+    x = s.sessions[0]
+    assert (x.id, x.project, x.model, x.tool) == ("�", "a�", "�", "�")
+    assert parse_snapshot('{"host":"\\udce9"}') is not None

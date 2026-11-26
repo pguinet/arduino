@@ -89,8 +89,13 @@ class Callbacks:
 
 def make_callbacks(cfg: DesktopConfig, post: Post) -> Callbacks:
     """paho VERSION2 callbacks; they run in paho's thread and only post events."""
+    # paho follows a refused CONNACK with on_disconnect("Unspecified error"): keep
+    # the refusal on screen, it names the real cause.
+    refused = False
 
     def on_connect(client: Any, userdata: Any, flags: Any, reason_code: Any, props: Any) -> None:
+        nonlocal refused
+        refused = reason_code.is_failure
         if reason_code.is_failure:
             log.error("MQTT refusé (%s)", reason_code)
             post(StatusEvent(ConnectionStatus(Phase.REFUSED, str(reason_code))))
@@ -106,7 +111,8 @@ def make_callbacks(cfg: DesktopConfig, post: Post) -> Callbacks:
 
     def on_disconnect(client: Any, userdata: Any, flags: Any, reason_code: Any, props: Any) -> None:
         log.warning("MQTT déconnecté (%s)", reason_code)
-        post(StatusEvent(ConnectionStatus(Phase.DISCONNECTED, str(reason_code))))
+        if not refused:
+            post(StatusEvent(ConnectionStatus(Phase.DISCONNECTED, str(reason_code))))
 
     def on_message(client: Any, userdata: Any, message: Any) -> None:
         try:

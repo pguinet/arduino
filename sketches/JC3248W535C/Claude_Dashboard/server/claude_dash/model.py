@@ -17,6 +17,9 @@ STALE_AFTER_S = 180
 FORGET_AFTER_S = 3600
 # Beyond this many days (since = 0, clock not synchronised) durations read "999j+".
 MAX_DAYS = 999
+# Same bound as the agent (_as_time): a larger epoch (milliseconds, garbage) would
+# crash datetime formatting in the window.
+EPOCH_LIMIT = 2**32
 
 COLOR_BG = "#0f1419"
 COLOR_CARD = "#1c2733"
@@ -85,11 +88,16 @@ def _percent(value: Any) -> int:
 
 
 def _epoch(value: Any) -> int:
-    return int(value) if _is_int(value) and value >= 0 else 0
+    return int(value) if _is_int(value) and 0 <= value < EPOCH_LIMIT else 0
+
+
+def _clean(text: str) -> str:
+    """Lone surrogates (valid JSON escapes) make Tk raise: replace them."""
+    return "".join("\ufffd" if 0xD800 <= ord(c) <= 0xDFFF else c for c in text)
 
 
 def _text(value: Any) -> str:
-    return value if isinstance(value, str) else ""
+    return _clean(value) if isinstance(value, str) else ""
 
 
 def _state(value: Any) -> State:
@@ -118,7 +126,7 @@ def _session(raw: Any) -> Session | None:
     if not isinstance(session_id, str) or not session_id:
         return None
     return Session(
-        id=session_id,
+        id=_clean(session_id),
         project=_text(raw.get("project")),
         model=_text(raw.get("model")),
         tool=_text(raw.get("tool")),
@@ -143,7 +151,10 @@ def parse_snapshot(payload: bytes | str) -> HostSnapshot | None:
     entries = raw_sessions if isinstance(raw_sessions, list) else []
     sessions = tuple(s for s in map(_session, entries) if s is not None)
     return HostSnapshot(
-        host=host, ts=_epoch(doc.get("ts")), limits=_limits(doc.get("limits")), sessions=sessions
+        host=_clean(host),
+        ts=_epoch(doc.get("ts")),
+        limits=_limits(doc.get("limits")),
+        sessions=sessions,
     )
 
 
