@@ -19,7 +19,7 @@ UNIT_DIR="$HOME/.config/systemd/user"
 UNIT=claude-dash-agent.service
 SETTINGS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
 HOOK="$BIN/claude-dash-hook"
-COMMANDS=(claude-dash-hook claude-dash-statusline claude-dash-agent)
+COMMANDS=(claude-dash-hook claude-dash-statusline claude-dash-agent claude-dash-desktop)
 EVENTS='["SessionStart","UserPromptSubmit","PreToolUse","PostToolUse","Notification","Stop","SessionEnd"]'
 
 # Filtres jq. Nos entrées sont reconnues à la commande (…/claude-dash-hook), quel que

@@ -55,7 +55,8 @@ cd <dépôt>/sketches/JC3248W535C/Claude_Dashboard/server
 Le script est idempotent : relance-le après un `git pull` pour mettre à jour. Il :
 
 1. crée un venv dans `~/.local/share/claude-dash/venv` et y installe le paquet ;
-2. lie les trois commandes dans `~/.local/bin/` ;
+2. lie les quatre commandes dans `~/.local/bin/` (dont `claude-dash-desktop`,
+   voir « Version poste de travail ») ;
 3. crée `~/.config/claude-dash/config.toml` (chmod 600) depuis
    `config.toml.example` s'il n'existe pas (jamais écrasé ensuite) ;
 4. ajoute les hooks dans `~/.claude/settings.json` (voir ci-dessous) ;
@@ -318,6 +319,55 @@ s'éjectent mutuellement en boucle.
 8. **Désinstallation** : `./install.sh --uninstall` (voir « Désinstallation »),
    puis supprime `~/.config/claude-dash/`, la ligne de la statusline, et le device
    dans la console Scaleway.
+
+## Version poste de travail (Linux, X déporté)
+
+`claude-dash-desktop` affiche le même tableau de bord que l'écran dans une
+fenêtre Tk toujours au premier plan, pour ne pas avoir à transporter l'écran. Elle
+tourne sur un serveur Linux sans bureau et s'affiche par X11 déporté (SSH `-X`,
+MobaXterm) : mêmes serveurs, quotas, cartes, couleurs, bandeau « Serveur
+injoignable » ; la cloche X remplace les bips (deux coups pour permission et
+question, un pour attente) et la carte concernée clignote. Pas de veille.
+
+1. **Device Scaleway dédié**, abonné seulement : Publish reject `#`, Subscribe
+   accept `claude-dash/#`. Ni celui de l'écran ni celui d'un agent : un Device ID
+   n'admet qu'une connexion, l'appli et l'écran s'éjecteraient en boucle.
+   Certificat et clé dans `~/.config/claude-dash/` (clé en chmod 600, non
+   chiffrée).
+2. **Config** `~/.config/claude-dash/desktop.toml` (chmod 600), distincte de
+   `config.toml` :
+   ```bash
+   install -m 600 desktop.toml.example ~/.config/claude-dash/desktop.toml
+   ```
+   Renseigne `client_id` (Device ID) et les noms de fichiers. Mêmes clés `[mqtt]`
+   que l'agent ; l'exemple est en MQTT sur wss (443) parce que le 8883 sortant est
+   filtré sur IF-VL-SEC-P1-PRI (ailleurs : `port = 8883` sans `transport`).
+   `[window] corner` choisit le coin d'ouverture (`top-left`, `top-right`,
+   `bottom-left`, `bottom-right`). `--config <fichier>` en désigne un autre.
+3. **Lancement** depuis un **onglet SSH dédié** (X11 forwarding actif), laissé
+   ouvert : `claude-dash-desktop`. La fenêtre se ferme avec l'onglet. Ne pas la
+   lancer depuis la commande de démarrage de session MobaXterm : chaque onglet
+   tenterait sa propre instance.
+
+Une seule instance par utilisateur (verrou `$XDG_RUNTIME_DIR/claude-dash-desktop.lock`) :
+un second lancement affiche `déjà lancé (PID n)` et s'arrête. Sous MobaXterm, le
+« toujours au premier plan » ne peut pas être retiré : la fenêtre reste devant.
+
+Dépannage :
+- **`pas d'affichage X`** : la session SSH n'a pas de `DISPLAY` ; activer le X11
+  forwarding dans la session MobaXterm (ou `ssh -X`).
+- **`MQTT : échec de connexion (réseau, TLS ou certificat)`** : hub injoignable
+  (8883 filtré : passer en wss 443), CA ou certificat client refusé au TLS.
+- **`MQTT : refusé par le broker (...)`** : Device ID inconnu ou qui ne correspond
+  pas au certificat.
+- **`MQTT : connecté, en attente d'un serveur` qui dure** : aucun agent ne publie,
+  ou le filtre Subscribe du device manque (reconnecter après un changement de
+  filtre : un abonnement refusé n'est pas signalé).
+- **Déconnexions en boucle** (pastille qui clignote, puis bandeau « Serveur
+  injoignable » une fois des serveurs affichés) : le même Device ID est utilisé
+  ailleurs (autre instance, écran, `mosquitto_sub`) ; chaque client doit avoir le
+  sien. La raison est dans l'onglet où tourne l'appli (`MQTT déconnecté (...)`).
+- **Pas de son** : réglage de la cloche X dans MobaXterm (Settings → X11).
 
 ## Dépannage
 
