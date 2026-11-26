@@ -1,8 +1,9 @@
 """Tk layer of the desktop client: draws a view.Screen and plays view.Reaction.
 
-Kept thin on purpose (no logic to test here) and light over remote X: widgets are
-rebuilt only when the content or the window size changes; the per-second tick
-only touches labels whose text changed.
+Kept thin and light over remote X: every widget is created once and then only
+reconfigured when its text, color or size actually changes. Destroying and
+rebuilding widgets blanks them for a moment on the X server, which flickers on
+every snapshot.
 """
 
 from __future__ import annotations
@@ -10,7 +11,6 @@ from __future__ import annotations
 import queue
 import time
 import tkinter as tk
-from dataclasses import dataclass, field
 from tkinter import font as tkfont
 
 from claude_dash.desktop_config import Corner
@@ -45,15 +45,7 @@ FLASH_STEP_MS = 500
 FLASH_S = 4.0
 BORDER = 5
 PAD = 6
-
-
-@dataclass
-class _CardWidgets:
-    color: str
-    inner: tk.Frame
-    labels: list[tk.Label] = field(default_factory=list)
-    duration: tk.Label | None = None
-    since: int = 0
+LIST_PADX = 8
 
 
 def _ellipsize(text: str, font: tkfont.Font, max_px: int) -> str:
@@ -62,6 +54,99 @@ def _ellipsize(text: str, font: tkfont.Font, max_px: int) -> str:
     while text and font.measure(text + "…") > max_px:
         text = text[:-1]
     return text + "…" if text else ""
+
+
+def _set(widget: tk.Label | tk.Frame, **options: str) -> None:
+    """Configure only the options whose value changes (each change repaints)."""
+    changed = {k: v for k, v in options.items() if str(widget.cget(k)) != v}
+    if changed:
+        widget.configure(**changed)
+
+
+def _label(parent: tk.Misc, font: tkfont.Font, color: str, bg: str = COLOR_BG) -> tk.Label:
+    return tk.Label(parent, font=font, fg=color, bg=bg, anchor="w", padx=0, pady=0)
+
+
+class _Gauge:
+    """Percentage bar: one persistent rectangle, moved instead of redrawn."""
+
+    def __init__(self, parent: tk.Misc, width: int, height: int) -> None:
+        self.canvas = tk.Canvas(
+            parent, width=width, height=height, bg=COLOR_TRACK, highlightthickness=0
+        )
+        self.height = height
+        self.bar = self.canvas.create_rectangle(0, 0, 0, height, fill=COLOR_TRACK, width=0)
+        self.shown: tuple[int, int, str] | None = None
+
+    def show(self, width: int, pct: int, color: str) -> None:
+        if self.shown == (width, pct, color):
+            return
+        self.shown = (width, pct, color)
+        if str(self.canvas.cget("width")) != str(width):
+            self.canvas.configure(width=width)
+        filled = width * min(max(pct, 0), 100) // 100
+        self.canvas.coords(self.bar, 0, 0, filled, self.height)
+        self.canvas.itemconfigure(self.bar, fill=color)
+
+
+class _CardSlot:
+    """One card position in the list, reused for whatever card lands there."""
+
+    def __init__(self, window: DesktopWindow, parent: tk.Frame) -> None:
+        self.outer = tk.Frame(parent, bg=COLOR_CARD)
+        self.inner = tk.Frame(self.outer, bg=COLOR_CARD, padx=PAD, pady=PAD // 2)
+        self.inner.pack(fill="both", expand=True, padx=(BORDER, 0))
+        self.title = self._cell(window.f18, 0)
+        self.model = self._cell(window.f14, 1)
+        self.state = self._cell(window.f14, 2)
+        self.tool = self._cell(window.f14, 3)
+        self.duration = self._cell(window.f16, 5)
+        self.duration.grid_configure(sticky="e", padx=0)
+        self.inner.grid_columnconfigure(4, weight=1)
+        self.ctx_row = tk.Frame(self.inner, bg=COLOR_CARD)
+        self.ctx_row.grid(row=1, column=0, columnspan=6, sticky="w", pady=(2, 0))
+        self.ctx_name = _label(self.ctx_row, window.f14, COLOR_DIM, COLOR_CARD)
+        self.ctx_name.configure(text="ctx")
+        self.ctx_name.pack(side="left")
+        self.gauge = _Gauge(self.ctx_row, 140, 10)
+        self.gauge.canvas.pack(side="left", padx=8)
+        self.ctx_pct = _label(self.ctx_row, window.f14, COLOR_TEXT, COLOR_CARD)
+        self.ctx_pct.pack(side="left")
+        self.key: tuple[str, str] = ("", "")
+        self.color = COLOR_CARD
+        self.since = 0
+
+    def _cell(self, font: tkfont.Font, column: int) -> tk.Label:
+        cell = _label(self.inner, font, COLOR_TEXT, COLOR_CARD)
+        cell.grid(row=0, column=column, sticky="w", padx=(0, 8))
+        return cell
+
+    def show(self, window: DesktopWindow, card: Card, width: int, now: int, dimmed: bool) -> None:
+        self.key, self.color, self.since = card.key, card.state_color, card.since
+        text = COLOR_DIM if dimmed else COLOR_TEXT
+        inner_w = width - 2 * LIST_PADX - BORDER - 2 * PAD
+        _set(self.outer, bg=card.state_color)
+        _set(self.title, text=_ellipsize(card.title, window.f18, int(inner_w * 0.38)), fg=text)
+        _set(self.model, text=_ellipsize(card.model, window.f14, int(inner_w * 0.2)), fg=COLOR_DIM)
+        _set(self.state, text=card.state_text, fg=COLOR_DIM if dimmed else card.state_color)
+        _set(self.tool, text=_ellipsize(card.tool, window.f14, int(inner_w * 0.14)), fg=COLOR_DIM)
+        _set(self.duration, text=duration_text(card.since, now), fg=text)
+        self.gauge.show(max(inner_w // 3, 60), card.ctx, card.ctx_color)
+        _set(self.ctx_pct, text=card.ctx_text, fg=text)
+
+    def paint(self, bg: str) -> None:
+        for widget in (
+            self.inner,
+            self.title,
+            self.model,
+            self.state,
+            self.tool,
+            self.duration,
+            self.ctx_row,
+            self.ctx_name,
+            self.ctx_pct,
+        ):
+            _set(widget, bg=bg)
 
 
 class DesktopWindow:
@@ -80,7 +165,8 @@ class DesktopWindow:
         self.f18 = tkfont.Font(root, family=family, size=-18)
         self.f16 = tkfont.Font(root, family=family, size=-16)
         self.f14 = tkfont.Font(root, family=family, size=-14)
-        self.cards: dict[tuple[str, str], _CardWidgets] = {}
+        self.slots: list[_CardSlot] = []
+        self.cards: dict[tuple[str, str], _CardSlot] = {}
         self.flash_until: dict[tuple[str, str], float] = {}
         self.flash_on = False
         self.shown_dimmed = False
@@ -97,42 +183,41 @@ class DesktopWindow:
 
     # --- static part: header, quotas, banner, list area ---
 
-    def _label(
-        self, parent: tk.Misc, font: tkfont.Font, color: str, bg: str = COLOR_BG
-    ) -> tk.Label:
-        return tk.Label(parent, font=font, fg=color, bg=bg, anchor="w", padx=0, pady=0)
-
     def _build_static(self) -> None:
         header = tk.Frame(self.root, bg=COLOR_BG)
         header.pack(fill="x", padx=10, pady=(6, 2))
-        title = self._label(header, self.f18, COLOR_TEXT)
+        title = _label(header, self.f18, COLOR_TEXT)
         title.configure(text="Claude Code")
         title.pack(side="left")
-        self.host = self._label(header, self.f16, COLOR_DIM)
+        self.host = _label(header, self.f16, COLOR_DIM)
         self.host.pack(side="left", padx=(12, 0))
-        self.clock = self._label(header, self.f18, COLOR_TEXT)
+        self.clock = _label(header, self.f18, COLOR_TEXT)
         self.clock.pack(side="right")
         self.dot = tk.Canvas(header, width=12, height=12, bg=COLOR_BG, highlightthickness=0)
         self.dot.pack(side="right", padx=8)
         self.dot_item = self.dot.create_oval(1, 1, 11, 11, fill=COLOR_PERMISSION, width=0)
+        self.dot_color = COLOR_PERMISSION
 
         self.quota_rows = [self._quota_row(), self._quota_row()]
         self.banner = tk.Label(self.root, font=self.f16, fg=COLOR_TEXT, bg=COLOR_PERMISSION)
         self.list = tk.Frame(self.root, bg=COLOR_BG)
-        self.list.pack(fill="both", expand=True, padx=8, pady=(4, 6))
+        self.list.pack(fill="both", expand=True, padx=LIST_PADX, pady=(4, 6))
+        self.message = _label(self.list, self.f16, COLOR_DIM)
+        self.message.configure(justify="left")
+        self.more = _label(self.list, self.f14, COLOR_DIM)
 
-    def _quota_row(self) -> tuple[tk.Label, tk.Canvas, tk.Label, tk.Label]:
+    def _quota_row(self) -> tuple[tk.Label, _Gauge, tk.Label, tk.Label]:
         row = tk.Frame(self.root, bg=COLOR_BG)
         row.pack(fill="x", padx=10, pady=1)
-        name = self._label(row, self.f16, COLOR_TEXT)
+        name = _label(row, self.f16, COLOR_TEXT)
         name.configure(width=3)
         name.pack(side="left")
-        gauge = tk.Canvas(row, width=220, height=14, bg=COLOR_TRACK, highlightthickness=0)
-        gauge.pack(side="left", padx=(4, 10))
-        pct = self._label(row, self.f16, COLOR_TEXT)
+        gauge = _Gauge(row, 220, 14)
+        gauge.canvas.pack(side="left", padx=(4, 10))
+        pct = _label(row, self.f16, COLOR_TEXT)
         pct.configure(width=4)
         pct.pack(side="left")
-        reset = self._label(row, self.f14, COLOR_DIM)
+        reset = _label(row, self.f14, COLOR_DIM)
         reset.pack(side="left", padx=(6, 0))
         return name, gauge, pct, reset
 
@@ -185,11 +270,10 @@ class DesktopWindow:
         if screen.dimmed != self.shown_dimmed:
             self._render(screen)
         else:
-            self._set(self.clock, clock_text(now))
+            _set(self.clock, text=clock_text(now))
             self._show_banner(screen.banner)
-            for widgets in self.cards.values():
-                if widgets.duration is not None:
-                    self._set(widgets.duration, duration_text(widgets.since, now))
+            for slot in self.slots:
+                _set(slot.duration, text=duration_text(slot.since, now))
         self.root.after(TICK_MS, self._tick)
 
     def _expire(self) -> None:
@@ -202,12 +286,12 @@ class DesktopWindow:
         self.flash_on = not self.flash_on
         now = time.monotonic()
         for key, until in list(self.flash_until.items()):
-            widgets = self.cards.get(key)
             active = until > now
             if not active:
                 del self.flash_until[key]
-            if widgets is not None:
-                self._paint_card(widgets, widgets.color if active and self.flash_on else COLOR_CARD)
+            slot = self.cards.get(key)
+            if slot is not None:
+                slot.paint(slot.color if active and self.flash_on else COLOR_CARD)
         self.root.after(FLASH_STEP_MS, self._flash_step)
 
     def _on_configure(self, event: tk.Event[tk.Misc]) -> None:
@@ -227,45 +311,35 @@ class DesktopWindow:
 
     # --- rendering ---
 
-    @staticmethod
-    def _set(label: tk.Label, text: str) -> None:
-        if label.cget("text") != text:
-            label.configure(text=text)
-
     def _show_banner(self, text: str) -> None:
         if not text:
-            self.banner.pack_forget()
+            if self.banner.winfo_manager():
+                self.banner.pack_forget()
             return
-        self._set(self.banner, text)
-        if not self.banner.winfo_ismapped():
-            self.banner.pack(fill="x", padx=8, pady=(4, 0), before=self.list)
-
-    def _gauge(self, canvas: tk.Canvas, width: int, pct: int, color: str) -> None:
-        canvas.configure(width=width)
-        canvas.delete("all")
-        if pct > 0:
-            height = int(canvas.cget("height"))
-            canvas.create_rectangle(0, 0, width * min(pct, 100) // 100, height, fill=color, width=0)
+        _set(self.banner, text=text)
+        if not self.banner.winfo_manager():
+            self.banner.pack(fill="x", padx=LIST_PADX, pady=(4, 0), before=self.list)
 
     def _render_quota(
-        self, row: tuple[tk.Label, tk.Canvas, tk.Label, tk.Label], q: Quota, width: int
+        self, row: tuple[tk.Label, _Gauge, tk.Label, tk.Label], q: Quota, width: int
     ) -> None:
         name, gauge, pct, reset = row
-        self._set(name, q.label)
-        self._gauge(gauge, width, q.pct, q.color)
-        self._set(pct, q.pct_text)
-        self._set(reset, q.reset_text)
+        _set(name, text=q.label)
+        gauge.show(width, q.pct, q.color)
+        _set(pct, text=q.pct_text)
+        _set(reset, text=q.reset_text)
 
     def _render(self, screen: Screen) -> None:
         now = int(time.time())
-        self.root.update_idletasks()
         win_w = max(self.root.winfo_width(), 320)
-        self._set(self.host, screen.host_label)
-        self._set(self.clock, clock_text(now))
-        self.dot.itemconfigure(self.dot_item, fill=COLOR_OK if screen.mqtt_ok else COLOR_PERMISSION)
-        quota_w = max(win_w - 260, 60)
+        _set(self.host, text=screen.host_label)
+        _set(self.clock, text=clock_text(now))
+        dot = COLOR_OK if screen.mqtt_ok else COLOR_PERMISSION
+        if dot != self.dot_color:
+            self.dot_color = dot
+            self.dot.itemconfigure(self.dot_item, fill=dot)
         for row, quota in zip(self.quota_rows, screen.quotas, strict=True):
-            self._render_quota(row, quota, quota_w)
+            self._render_quota(row, quota, max(win_w - 260, 60))
         self._show_banner(screen.banner)
         self.shown_dimmed = screen.dimmed
         self._render_cards(screen, win_w, now)
@@ -274,73 +348,42 @@ class DesktopWindow:
         lines = self.f18.metrics("linespace") + self.f14.metrics("linespace")
         return int(lines) + 2 * PAD + 8
 
-    def _render_cards(self, screen: Screen, win_w: int, now: int) -> None:
-        for child in self.list.winfo_children():
-            child.destroy()
-        self.cards = {}
-        if screen.message:
-            msg = self._label(self.list, self.f16, COLOR_DIM)
-            msg.configure(text=screen.message, wraplength=win_w - 30, justify="left")
-            msg.pack(fill="x", pady=10)
-            return
+    def _available_height(self) -> int:
         self.root.update_idletasks()
-        available = self.root.winfo_height() - self.list.winfo_y() - 6
-        more_h = int(self.f14.metrics("linespace")) + 4
-        shown = fit_cards(len(screen.cards), available, self._card_height(), more_h)
-        for card in screen.cards[:shown]:
-            self._add_card(card, win_w, now, screen.dimmed)
-        hidden = len(screen.cards) - shown
-        if hidden > 0:
-            more = self._label(self.list, self.f14, COLOR_DIM)
-            more.configure(text=f"+{hidden} autres sessions")
-            more.pack(fill="x")
+        return self.root.winfo_height() - self.list.winfo_y() - 6
 
-    def _add_card(self, card: Card, win_w: int, now: int, dimmed: bool) -> None:
-        outer = tk.Frame(self.list, bg=card.state_color)
-        outer.pack(fill="x", pady=(0, 4))
-        inner = tk.Frame(outer, bg=COLOR_CARD, padx=PAD, pady=PAD // 2)
-        inner.pack(fill="both", expand=True, padx=(BORDER, 0))
-        widgets = _CardWidgets(color=card.state_color, inner=inner, since=card.since)
-        text = COLOR_DIM if dimmed else COLOR_TEXT
-        state = COLOR_DIM if dimmed else card.state_color
-
-        def label(font: tkfont.Font, color: str, value: str, row: int, column: int) -> tk.Label:
-            lbl = self._label(inner, font, color, COLOR_CARD)
-            lbl.configure(text=value)
-            lbl.grid(row=row, column=column, sticky="w", padx=(0, 8))
-            widgets.labels.append(lbl)
-            return lbl
-
-        inner_w = win_w - 2 * 8 - BORDER - 2 * PAD
-        label(self.f18, text, _ellipsize(card.title, self.f18, int(inner_w * 0.38)), 0, 0)
-        label(self.f14, COLOR_DIM, _ellipsize(card.model, self.f14, int(inner_w * 0.2)), 0, 1)
-        label(self.f14, state, card.state_text, 0, 2)
-        label(self.f14, COLOR_DIM, _ellipsize(card.tool, self.f14, int(inner_w * 0.14)), 0, 3)
-        duration = label(self.f16, text, duration_text(card.since, now), 0, 5)
-        duration.grid_configure(sticky="e", padx=0)
-        widgets.duration = duration
-        inner.grid_columnconfigure(4, weight=1)
-
-        ctx = tk.Frame(inner, bg=COLOR_CARD)
-        ctx.grid(row=1, column=0, columnspan=6, sticky="w", pady=(2, 0))
-        name = self._label(ctx, self.f14, COLOR_DIM, COLOR_CARD)
-        name.configure(text="ctx")
-        name.pack(side="left")
-        gauge = tk.Canvas(ctx, width=140, height=10, bg=COLOR_TRACK, highlightthickness=0)
-        gauge.pack(side="left", padx=8)
-        self._gauge(gauge, max(inner_w // 3, 60), card.ctx, card.ctx_color)
-        pct = self._label(ctx, self.f14, text, COLOR_CARD)
-        pct.configure(text=card.ctx_text)
-        pct.pack(side="left")
-        widgets.labels.extend([name, pct])
-        self.cards[card.key] = widgets
-        if card.key in self.flash_until:
-            self._paint_card(widgets, card.state_color if self.flash_on else COLOR_CARD)
+    def _render_cards(self, screen: Screen, win_w: int, now: int) -> None:
+        shown = 0
+        if not screen.message:
+            more_h = int(self.f14.metrics("linespace")) + 4
+            shown = fit_cards(
+                len(screen.cards), self._available_height(), self._card_height(), more_h
+            )
+        while len(self.slots) > shown:
+            self.slots.pop().outer.destroy()
+        while len(self.slots) < shown:
+            slot = _CardSlot(self, self.list)
+            if self.more.winfo_manager():
+                slot.outer.pack(fill="x", pady=(0, 4), before=self.more)
+            else:
+                slot.outer.pack(fill="x", pady=(0, 4))
+            self.slots.append(slot)
+        self.cards = {}
+        for slot, card in zip(self.slots, screen.cards, strict=False):
+            slot.show(self, card, win_w, now, screen.dimmed)
+            self.cards[card.key] = slot
+            flashing = card.key in self.flash_until and self.flash_on
+            slot.paint(card.state_color if flashing else COLOR_CARD)
+        self._show_line(self.message, screen.message, wraplength=str(win_w - 30))
+        hidden = len(screen.cards) - shown if not screen.message else 0
+        self._show_line(self.more, f"+{hidden} autres sessions" if hidden > 0 else "")
 
     @staticmethod
-    def _paint_card(widgets: _CardWidgets, bg: str) -> None:
-        widgets.inner.configure(bg=bg)
-        for child in widgets.inner.winfo_children():
-            child.configure(bg=bg)  # type: ignore[call-arg]
-        for lbl in widgets.labels:
-            lbl.configure(bg=bg)
+    def _show_line(label: tk.Label, text: str, **options: str) -> None:
+        if not text:
+            if label.winfo_manager():
+                label.pack_forget()
+            return
+        _set(label, text=text, **options)
+        if not label.winfo_manager():
+            label.pack(fill="x", pady=(6, 0))
