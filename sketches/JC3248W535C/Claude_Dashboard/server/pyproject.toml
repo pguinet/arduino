@@ -16,6 +16,7 @@ dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
 claude-dash-hook = "claude_dash.hook:main"
 claude-dash-statusline = "claude_dash.statusline:main"
 claude-dash-agent = "claude_dash.agent:main"
+claude-dash-desktop = "claude_dash.desktop:main"
 
 [tool.setuptools]
 packages = ["claude_dash"]
